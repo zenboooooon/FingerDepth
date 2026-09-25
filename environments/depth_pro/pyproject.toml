@@ -1,0 +1,16 @@
+[project]
+name = "fingertip-depth-depth-pro-runtime"
+version = "0.1.0"
+description = "Isolated uv runtime for the pinned Apple Depth Pro comparison"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "depth-pro @ git+https://github.com/apple/ml-depth-pro.git@9e65e4dbe9568d23c546fcec53302b10445e109e",
+    "huggingface-hub>=0.27,<2",
+    "numpy>=1.26,<2",
+    "opencv-contrib-python>=4.11,<5",
+    "pillow>=11,<13",
+    "pillow-heif>=1.8.0",
+]
+
+[tool.uv]
+package = false

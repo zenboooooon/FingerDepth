@@ -1,0 +1,10 @@
+platform :ios, '26.0'
+
+target 'FingertipDraw' do
+  use_frameworks!
+  pod 'MediaPipeTasksVision', '0.10.14'
+
+  target 'FingertipDrawTests' do
+    inherit! :search_paths
+  end
+end

@@ -1,0 +1,61 @@
+name: FingertipDraw
+options:
+  bundleIdPrefix: jp.ac.fingertipdepth
+  minimumXcodeGenVersion: 2.38.0
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    SUPPORTS_MACCATALYST: false
+    DEVELOPMENT_TEAM: ""
+targets:
+  FingertipDraw:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../../assets/hand_landmarker.task
+        buildPhase: resources
+      - path: ../../outputs/phase8_student_coreml_iphone15/StudentDepth.mlpackage
+    info:
+      path: Supporting/Info.plist
+      properties:
+        CFBundleDisplayName: Fingertip Draw
+        NSCameraUsageDescription: 指先の3次元位置を推定し、軌跡を描画するためにカメラを使用します。
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiresFullScreen: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: jp.ac.fingertipdepth.FingertipDraw
+        PRODUCT_NAME: FingertipDraw
+        GENERATE_INFOPLIST_FILE: false
+  FingertipDrawTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: FingertipDraw
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: jp.ac.fingertipdepth.FingertipDrawTests
+schemes:
+  FingertipDraw:
+    build:
+      targets:
+        FingertipDraw: all
+        FingertipDrawTests: [test]
+    test:
+      targets:
+        - FingertipDrawTests

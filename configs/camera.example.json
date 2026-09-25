@@ -1,0 +1,9 @@
+{
+  "fx_px": 1000.0,
+  "fy_px": 1000.0,
+  "cx_px": 959.5,
+  "cy_px": 539.5,
+  "width": 1920,
+  "height": 1080,
+  "note": "Replace these placeholders with calibrated intrinsics for the exact capture resolution."
+}
