@@ -1,0 +1,152 @@
+{
+  "format": "fingertip-depth-student-coreml-export",
+  "format_version": 1,
+  "target": {
+    "device": {
+      "marketing_name": "iPhone 15",
+      "hardware_identifier": "iPhone15,4",
+      "operating_system": "iOS 26.6.1"
+    },
+    "camera": {
+      "position": "back",
+      "device_type": "builtInWideAngleCamera",
+      "resolution": [
+        1080,
+        1920
+      ],
+      "frames_per_second": 30,
+      "orientation": "portrait",
+      "full_frame_equivalent_focal_length_mm": 36.0,
+      "native_equivalent_focal_length_mm": 26.0,
+      "requested_zoom_factor": 1.3846153846153846,
+      "stabilization": "off"
+    }
+  },
+  "source": {
+    "run_manifest_path": "/home/s6323038/depth_for_task/outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/run_manifest.json",
+    "run_manifest_sha256": "b35ce59b73ab01b1e6789f2a203bcccad59cd5eef081be2181865d695c195e3a",
+    "checkpoint_path": "/home/s6323038/depth_for_task/outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/best_checkpoint.pt",
+    "checkpoint_sha256": "e2e8941d2187e20dc716580fbbafb294cc9809db54b467a2d09fb52b39492252",
+    "checkpoint_epoch": 6,
+    "dataset_manifest_sha256": "795112948ba8e43d4913316369940320df23e63f7e06d333bafa892e2192f8f4"
+  },
+  "interface": {
+    "image": {
+      "name": "image",
+      "coreml_type": "RGB image",
+      "size": [
+        224,
+        224
+      ],
+      "source_range": [
+        0,
+        255
+      ],
+      "coreml_scale": 0.00392156862745098,
+      "resize": "whole portrait frame directly to 224x224; no crop or letterbox",
+      "normalization_mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "normalization_std": [
+        0.229,
+        0.224,
+        0.225
+      ]
+    },
+    "landmarks": {
+      "name": "landmarks_xy",
+      "shape": [
+        1,
+        4,
+        2
+      ],
+      "indices": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "coordinate_range": [
+        0.0,
+        1.0
+      ],
+      "internal_transform": "2*x-1",
+      "relative_z_included": false
+    },
+    "output": {
+      "name": "depth_m",
+      "shape": [
+        1,
+        1
+      ],
+      "unit": "metre",
+      "meaning": "index fingertip camera-axis Z; raw scalar without clipping"
+    }
+  },
+  "conversion": {
+    "coremltools_version": "9.0",
+    "model_type": "mlProgram",
+    "specification_version": 9,
+    "compute_precision": "float16",
+    "minimum_deployment_target": "iOS 18 (application target is iOS 26.0)",
+    "transformer_export_strategy": "evaluation-equivalent explicit QKV matmul/softmax; trained weights unchanged"
+  },
+  "validation": {
+    "torchscript": {
+      "case_count": 1,
+      "export_wrapper_vs_torchscript_mean_absolute_difference_m": 0.0,
+      "export_wrapper_vs_torchscript_max_absolute_difference_m": 0.0,
+      "trained_pytorch_vs_export_wrapper_mean_absolute_difference_m": 0.0,
+      "trained_pytorch_vs_export_wrapper_max_absolute_difference_m": 0.0,
+      "fixed_shape_export": true,
+      "batch_size": 1
+    },
+    "parity_fixture": {
+      "sample_count": 604,
+      "sequence_id": "finger_movement_2030",
+      "image_shape": [
+        604,
+        224,
+        224,
+        3
+      ],
+      "landmark_shape": [
+        604,
+        4,
+        2
+      ],
+      "prediction_min_m": 0.22375959157943726,
+      "prediction_max_m": 0.42621690034866333
+    },
+    "coreml_runtime": {
+      "status": "pending_macos_or_ios",
+      "mean_absolute_difference_limit_m": 0.001,
+      "max_absolute_difference_limit_m": 0.003,
+      "reason": "Core ML prediction is unavailable on Linux"
+    }
+  },
+  "artifacts": {
+    "torchscript": {
+      "path": "/home/s6323038/depth_for_task/outputs/phase8_student_coreml_iphone15/StudentDepth.trace.pt",
+      "sha256": "bd62576d5e1c461a32531a1d45252fc523a2d7738e3c8ce6216bcdd35d0a6cd0",
+      "byte_count": 102257559
+    },
+    "coreml": {
+      "path": "/home/s6323038/depth_for_task/outputs/phase8_student_coreml_iphone15/StudentDepth.mlpackage",
+      "sha256": "84938b411f15e87abfcb1a5ed712ce31c7f4251de1bd75a5959593f6282d161b",
+      "byte_count": 51027727
+    },
+    "parity_fixture": {
+      "path": "/home/s6323038/depth_for_task/outputs/phase8_student_coreml_iphone15/coreml_parity_inputs.npz",
+      "sha256": "2ae8de98c98dd6982c66f58372c2c24e9ba68eac7436d6bba4d29ef20dfaeb7c",
+      "byte_count": 60295161
+    }
+  },
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.7.0+cu126",
+    "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.39"
+  }
+}

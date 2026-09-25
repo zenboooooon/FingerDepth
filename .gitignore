@@ -5,5 +5,16 @@ __pycache__/
 .ruff_cache/
 assets/*.task
 phase1_2_sample/
-outputs/
+outputs/*
 
+#iphoneでの実機テスト用
+!outputs/phase8_student_coreml_iphone15/
+outputs/phase8_student_coreml_iphone15/*
+!outputs/phase8_student_coreml_iphone15/StudentDepth.mlpackage/
+!outputs/phase8_student_coreml_iphone15/StudentDepth.mlpackage/**
+!outputs/phase8_student_coreml_iphone15/coreml_parity_inputs.npz
+!outputs/phase8_student_coreml_iphone15/export_manifest.json
+
+!outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/
+outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/*
+!outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/best_checkpoint.pt
