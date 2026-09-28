@@ -7,6 +7,12 @@ __pycache__/
 phase1_2_sample/
 outputs/*
 
+# Local training-video bytes. Keep only the directory placeholders in Git.
+/data/training_videos/train/*
+!/data/training_videos/train/.gitkeep
+/data/training_videos/validation/*
+!/data/training_videos/validation/.gitkeep
+
 #iphoneでの実機テスト用
 !outputs/phase8_student_coreml_iphone15/
 outputs/phase8_student_coreml_iphone15/*
@@ -18,3 +24,11 @@ outputs/phase8_student_coreml_iphone15/*
 !outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/
 outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/*
 !outputs/phase8_student_vit_landmarks_xy_spike_filtered_chronological_tail7/best_checkpoint.pt
+
+# Latest training-pipeline model used by the iOS A/B switch.
+!outputs/student_depth_coreml_latest/
+outputs/student_depth_coreml_latest/*
+!outputs/student_depth_coreml_latest/StudentDepthLatest.mlpackage/
+!outputs/student_depth_coreml_latest/StudentDepthLatest.mlpackage/**
+!outputs/student_depth_coreml_latest/coreml_parity_inputs.npz
+!outputs/student_depth_coreml_latest/export_manifest.json
