@@ -13,9 +13,7 @@ final class CameraViewController: UIViewController {
     private let drawButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
     private let clearButton = UIButton(type: .system)
-    private let modelControl = UISegmentedControl(
-        items: StudentDepthModelVariant.allCases.map { $0.descriptor.shortName }
-    )
+    private let modelButton = UIButton(type: .system)
     private let trajectory = TrajectoryStore()
     private var selectedModel = StudentDepthModelVariant.defaultVariant
     private var pipeline: InferencePipeline?
@@ -49,6 +47,7 @@ final class CameraViewController: UIViewController {
         super.viewDidLayoutSubviews()
         previewLayer.frame = view.bounds
         overlayView.frame = view.bounds
+        view.bringSubviewToFront(modelButton)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -82,16 +81,14 @@ final class CameraViewController: UIViewController {
         configure(button: stopButton, title: "停止", color: .systemOrange, action: #selector(stopDrawing))
         configure(button: clearButton, title: "消去", color: .systemGray, action: #selector(clearDrawing))
         let controls = UIStackView(arrangedSubviews: [drawButton, stopButton, clearButton])
-        modelControl.selectedSegmentIndex =
-            StudentDepthModelVariant.allCases.firstIndex(of: selectedModel) ?? 0
-        modelControl.selectedSegmentTintColor = .systemIndigo
-        modelControl.backgroundColor = UIColor.black.withAlphaComponent(0.62)
-        modelControl.addTarget(self, action: #selector(selectDepthModel), for: .valueChanged)
+        updateModelButton(for: selectedModel, isSwitching: false)
+        modelButton.addTarget(self, action: #selector(toggleDepthModel), for: .touchUpInside)
+        modelButton.accessibilityIdentifier = "depth-model-switch"
         controls.axis = .horizontal
         controls.spacing = 12
         controls.distribution = .fillEqually
 
-        [statusLabel, depthLabel, modelControl, controls].forEach {
+        [statusLabel, depthLabel, modelButton, controls].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview($0)
         }
@@ -102,10 +99,10 @@ final class CameraViewController: UIViewController {
             statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 46),
             depthLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             depthLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14),
-            modelControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            modelControl.bottomAnchor.constraint(equalTo: controls.topAnchor, constant: -10),
-            modelControl.widthAnchor.constraint(equalToConstant: 220),
-            modelControl.heightAnchor.constraint(equalToConstant: 34),
+            modelButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            modelButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+            modelButton.bottomAnchor.constraint(equalTo: controls.topAnchor, constant: -10),
+            modelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 58),
             controls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             controls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
             controls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -14),
@@ -126,6 +123,38 @@ final class CameraViewController: UIViewController {
         configuration.cornerStyle = .large
         button.configuration = configuration
         button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    private func nextModel(after model: StudentDepthModelVariant) -> StudentDepthModelVariant? {
+        let variants = StudentDepthModelVariant.allCases
+        guard let currentIndex = variants.firstIndex(of: model) else { return nil }
+        let nextIndex = variants.index(after: currentIndex)
+        return nextIndex == variants.endIndex ? variants.first : variants[nextIndex]
+    }
+
+    private func updateModelButton(
+        for model: StudentDepthModelVariant,
+        isSwitching: Bool
+    ) {
+        let nextModel = nextModel(after: model)
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = "推論モデル：\(model.descriptor.shortName)"
+        configuration.subtitle = isSwitching
+            ? "切り替え中…"
+            : "タップで\(nextModel?.descriptor.shortName ?? "別モデル")へ切替"
+        configuration.baseBackgroundColor = .systemIndigo
+        configuration.baseForegroundColor = .white
+        configuration.cornerStyle = .large
+        modelButton.configuration = configuration
+        modelButton.accessibilityLabel = "深さ推定モデル"
+        modelButton.accessibilityValue = isSwitching
+            ? "\(model.descriptor.displayName)へ切り替え中"
+            : model.descriptor.displayName
+        modelButton.accessibilityHint = isSwitching
+            ? nil
+            : nextModel.map {
+                "ダブルタップで\($0.descriptor.displayName)へ切り替えます"
+            }
     }
 
     private func requestCameraAndStart() {
@@ -252,15 +281,12 @@ final class CameraViewController: UIViewController {
         }
     }
 
-    @objc private func selectDepthModel() {
-        let variants = StudentDepthModelVariant.allCases
-        guard variants.indices.contains(modelControl.selectedSegmentIndex) else {
-            return
-        }
-        let model = variants[modelControl.selectedSegmentIndex]
+    @objc private func toggleDepthModel() {
+        guard let model = nextModel(after: selectedModel) else { return }
         guard model != selectedModel else { return }
         selectedModel = model
-        modelControl.isEnabled = false
+        modelButton.isEnabled = false
+        updateModelButton(for: model, isSwitching: true)
         isDrawing = false
         drawButton.configuration?.baseBackgroundColor = UIColor.systemCyan.withAlphaComponent(0.88)
         trajectory.clear()
@@ -275,7 +301,7 @@ final class CameraViewController: UIViewController {
         statusLabel.backgroundColor = UIColor.systemRed.withAlphaComponent(0.80)
         drawButton.isEnabled = false
         stopButton.isEnabled = false
-        modelControl.isEnabled = false
+        modelButton.isEnabled = false
     }
 }
 
@@ -331,7 +357,8 @@ extension CameraViewController: InferencePipelineDelegate {
 
     func inferencePipeline(_ pipeline: InferencePipeline, didActivate model: StudentDepthModelVariant) {
         guard model == selectedModel else { return }
-        modelControl.isEnabled = true
+        modelButton.isEnabled = true
+        updateModelButton(for: model, isSwitching: false)
         depthLabel.text = "— cm"
         lastUpdateTime = nil
         displayedFPS = 0
