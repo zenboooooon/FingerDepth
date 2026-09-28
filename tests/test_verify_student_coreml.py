@@ -56,7 +56,7 @@ def _manifest(
 ) -> dict[str, Any]:
     return {
         "format": verification.EXPORT_FORMAT,
-        "format_version": verification.EXPORT_FORMAT_VERSION,
+        "format_version": 1,
         "source": {
             "checkpoint_path": str(checkpoint_path),
             "checkpoint_sha256": verification.sha256_file(checkpoint_path),
@@ -156,6 +156,42 @@ def test_validate_export_provenance_records_all_hashes(tmp_path: Path) -> None:
     assert provenance["manifest_interface"]["verified"] is True
 
 
+def test_validate_export_provenance_accepts_v2_manifest(tmp_path: Path) -> None:
+    paths = _artifacts(tmp_path)
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    manifest["format_version"] = 2
+    manifest["model"] = {
+        "model_id": "latest_training_pipeline",
+        "export_backend": "torch.export",
+    }
+    manifest["source"]["run_manifest_sha256"] = "a" * 64
+    paths["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    _, provenance = verification.validate_export_provenance(
+        manifest_path=paths["manifest"],
+        model_path=paths["model"],
+        fixture_path=paths["fixture"],
+        checkpoint_path=paths["checkpoint"],
+    )
+
+    assert provenance["export_manifest"]["format_version"] == 2
+
+
+def test_validate_export_provenance_rejects_unknown_manifest_version(tmp_path: Path) -> None:
+    paths = _artifacts(tmp_path)
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    manifest["format_version"] = 3
+    paths["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported Core ML export manifest"):
+        verification.validate_export_provenance(
+            manifest_path=paths["manifest"],
+            model_path=paths["model"],
+            fixture_path=paths["fixture"],
+            checkpoint_path=paths["checkpoint"],
+        )
+
+
 @pytest.mark.parametrize("tampered", ["model", "fixture", "checkpoint"])
 def test_validate_export_provenance_rejects_tampering(
     tmp_path: Path,
@@ -198,6 +234,38 @@ def test_validate_coreml_contract_checks_metadata_and_interface() -> None:
         verification.validate_coreml_contract(
             wrong_shape,
             expected_checkpoint_sha256=checkpoint_hash,
+        )
+
+
+def test_validate_coreml_contract_checks_v2_metadata() -> None:
+    checkpoint_hash = "a" * 64
+    run_manifest_hash = "b" * 64
+    contract = _coreml_contract(checkpoint_hash)
+    contract["user_defined_metadata"].update(
+        {
+            "model_id": "latest_training_pipeline",
+            "run_manifest_sha256": run_manifest_hash,
+            "export_backend": "torch.export",
+        }
+    )
+
+    verified = verification.validate_coreml_contract(
+        contract,
+        expected_checkpoint_sha256=checkpoint_hash,
+        expected_model_id="latest_training_pipeline",
+        expected_run_manifest_sha256=run_manifest_hash,
+        expected_export_backend="torch.export",
+    )
+    assert verified["verified"] is True
+
+    contract["user_defined_metadata"]["export_backend"] = "torchscript"
+    with pytest.raises(ValueError, match="export_backend metadata"):
+        verification.validate_coreml_contract(
+            contract,
+            expected_checkpoint_sha256=checkpoint_hash,
+            expected_model_id="latest_training_pipeline",
+            expected_run_manifest_sha256=run_manifest_hash,
+            expected_export_backend="torch.export",
         )
 
 

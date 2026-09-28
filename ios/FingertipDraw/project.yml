@@ -20,6 +20,7 @@ targets:
       - path: ../../assets/hand_landmarker.task
         buildPhase: resources
       - path: ../../outputs/phase8_student_coreml_iphone15/StudentDepth.mlpackage
+      - path: ../../outputs/student_depth_coreml_latest/StudentDepthLatest.mlpackage
     info:
       path: Supporting/Info.plist
       properties:

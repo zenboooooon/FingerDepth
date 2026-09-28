@@ -1,10 +1,11 @@
-"""Audited Core ML export for the Phase 8 fingertip-depth student."""
+"""Audited Core ML export for fingertip-depth student models."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import platform
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -23,7 +24,7 @@ from .student_training import (
 )
 
 COREML_EXPORT_FORMAT = "fingertip-depth-student-coreml-export"
-COREML_EXPORT_FORMAT_VERSION = 1
+COREML_EXPORT_FORMAT_VERSION = 2
 CHECKPOINT_FORMAT = "fingertip-depth-student-checkpoint"
 TRAINING_RUN_FORMAT = "fingertip-depth-student-training"
 TRAINING_RUN_FORMAT_VERSION = 2
@@ -32,6 +33,12 @@ EXPECTED_IMAGE_SIZE = 224
 IMAGE_INPUT_NAME = "image"
 LANDMARK_INPUT_NAME = "landmarks_xy"
 OUTPUT_NAME = "depth_m"
+TORCH_EXPORT_BACKEND = "torch.export"
+TORCHSCRIPT_BACKEND = "torchscript"
+FORBIDDEN_TORCH_EXPORT_OPERATOR_PREFIXES = (
+    "aten._transformer_encoder_layer_fwd",
+    "aten.Int",
+)
 TARGET_DEVICE = {
     "marketing_name": "iPhone 15",
     "hardware_identifier": "iPhone15,4",
@@ -336,6 +343,107 @@ def make_coreml_wrapper(source: StudentExportSource) -> CoreMLTraceWrapper:
     ).eval()
 
 
+def make_export_wrapper(source: StudentExportSource) -> StudentCoreMLWrapper:
+    """Build the unmodified deployment wrapper used by ``torch.export``."""
+
+    return StudentCoreMLWrapper(
+        source.model,
+        image_mean=source.training_config.image_mean,
+        image_std=source.training_config.image_std,
+    ).eval()
+
+
+def _torch_export_operator_counts(
+    exported: torch.export.ExportedProgram,
+) -> dict[str, int]:
+    counts = Counter(
+        str(node.target)
+        for node in exported.graph.nodes
+        if node.op == "call_function"
+    )
+    return dict(sorted(counts.items()))
+
+
+def _audit_torch_export_graph(
+    exported: torch.export.ExportedProgram,
+) -> dict[str, Any]:
+    dialect = str(exported.dialect)
+    if dialect != "ATEN":
+        raise ValueError(f"Core ML requires an ATEN ExportedProgram, got {dialect}")
+    operator_counts = _torch_export_operator_counts(exported)
+    forbidden = sorted(
+        operator
+        for operator in operator_counts
+        if operator.startswith(FORBIDDEN_TORCH_EXPORT_OPERATOR_PREFIXES)
+    )
+    if forbidden:
+        raise ValueError(f"unsupported fused operators remain after decomposition: {forbidden}")
+    return {
+        "dialect": dialect,
+        "operator_counts": operator_counts,
+        "forbidden_operators": forbidden,
+        "node_count": len(tuple(exported.graph.nodes)),
+    }
+
+
+def export_student_for_coreml(
+    wrapper: nn.Module,
+    *,
+    output_path: Path,
+    seed: int = 20260925,
+) -> tuple[torch.export.ExportedProgram, dict[str, Any]]:
+    """Capture a strict fixed-shape ATEN graph and verify it against eager PyTorch."""
+
+    output_path = output_path.resolve()
+    if output_path.suffix != ".pt2":
+        raise ValueError("torch.export output must use the .pt2 suffix")
+    if output_path.exists():
+        raise FileExistsError(f"refusing to replace existing ExportedProgram: {output_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    example_image = torch.rand(
+        (1, 3, EXPECTED_IMAGE_SIZE, EXPECTED_IMAGE_SIZE), generator=generator
+    )
+    example_landmarks = torch.rand(
+        (1, len(EXPECTED_LANDMARK_INDICES), 2), generator=generator
+    )
+    verification_image = torch.rand(
+        (1, 3, EXPECTED_IMAGE_SIZE, EXPECTED_IMAGE_SIZE), generator=generator
+    )
+    verification_landmarks = torch.rand(
+        (1, len(EXPECTED_LANDMARK_INDICES), 2), generator=generator
+    )
+
+    exported = torch.export.export(
+        wrapper,
+        (example_image, example_landmarks),
+        strict=True,
+    ).run_decompositions({})
+    graph_audit = _audit_torch_export_graph(exported)
+    with torch.inference_mode():
+        eager_output = wrapper(verification_image, verification_landmarks)
+        exported_output = exported.module()(verification_image, verification_landmarks)
+    difference = (eager_output - exported_output).abs()
+    maximum_difference_m = float(difference.max().item())
+    if maximum_difference_m > 1e-6:
+        raise ValueError(
+            f"ExportedProgram differs from trained PyTorch by {maximum_difference_m:.9f} m"
+        )
+    torch.export.save(exported, output_path)
+    return exported, {
+        "case_count": 1,
+        "trained_pytorch_vs_exported_program_mean_absolute_difference_m": float(
+            difference.mean().item()
+        ),
+        "trained_pytorch_vs_exported_program_max_absolute_difference_m": maximum_difference_m,
+        "fixed_shape_export": True,
+        "batch_size": 1,
+        "strict": True,
+        "decomposition_table": "empty",
+        **graph_audit,
+    }
+
+
 def trace_student_for_coreml(
     wrapper: nn.Module,
     *,
@@ -400,14 +508,15 @@ def trace_student_for_coreml(
     }
 
 
-def convert_torchscript_to_coreml(
-    traced: torch.jit.ScriptModule,
+def _convert_to_coreml(
+    source_model: Any,
     *,
     output_path: Path,
     checkpoint_sha256: str,
+    export_backend: str,
+    model_id: str | None,
+    run_manifest_sha256: str | None,
 ) -> dict[str, Any]:
-    """Convert to a float16 ML Program with an RGB image input."""
-
     try:
         import coremltools as ct
     except ImportError as error:  # pragma: no cover - exercised in the dedicated environment
@@ -423,7 +532,7 @@ def convert_torchscript_to_coreml(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     coreml_model = ct.convert(
-        traced,
+        source_model,
         convert_to="mlprogram",
         minimum_deployment_target=ct.target.iOS18,
         compute_precision=ct.precision.FLOAT16,
@@ -447,15 +556,19 @@ def convert_torchscript_to_coreml(
         "Phase 8 ViT + landmark Transformer: index fingertip optical-axis depth in metres"
     )
     coreml_model.version = "1"
-    coreml_model.user_defined_metadata.update(
-        {
-            "checkpoint_sha256": checkpoint_sha256,
-            "input_landmark_indices": ",".join(map(str, EXPECTED_LANDMARK_INDICES)),
-            "image_resize": "direct_bicubic_224x224_no_crop",
-            "target_device": "iPhone 15 (iPhone15,4), iOS 26.6.1",
-            "training_target": "Depth Pro pseudo-label metric Z in metres",
-        }
-    )
+    metadata = {
+        "checkpoint_sha256": checkpoint_sha256,
+        "input_landmark_indices": ",".join(map(str, EXPECTED_LANDMARK_INDICES)),
+        "image_resize": "direct_bicubic_224x224_no_crop",
+        "target_device": "iPhone 15 (iPhone15,4), iOS 26.6.1",
+        "training_target": "Depth Pro pseudo-label metric Z in metres",
+        "export_backend": export_backend,
+    }
+    if model_id is not None:
+        metadata["model_id"] = model_id
+    if run_manifest_sha256 is not None:
+        metadata["run_manifest_sha256"] = run_manifest_sha256
+    coreml_model.user_defined_metadata.update(metadata)
     coreml_model.save(str(output_path))
 
     spec = coreml_model.get_spec()
@@ -465,7 +578,50 @@ def convert_torchscript_to_coreml(
         "specification_version": int(spec.specificationVersion),
         "compute_precision": "float16",
         "minimum_deployment_target": "iOS 18 (application target is iOS 26.0)",
+        "export_backend": export_backend,
+        "model_id": model_id,
     }
+
+
+def convert_torchscript_to_coreml(
+    traced: torch.jit.ScriptModule,
+    *,
+    output_path: Path,
+    checkpoint_sha256: str,
+    model_id: str | None = None,
+    run_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Convert the retained TorchScript fallback to a float16 ML Program."""
+
+    return _convert_to_coreml(
+        traced,
+        output_path=output_path,
+        checkpoint_sha256=checkpoint_sha256,
+        export_backend=TORCHSCRIPT_BACKEND,
+        model_id=model_id,
+        run_manifest_sha256=run_manifest_sha256,
+    )
+
+
+def convert_exported_program_to_coreml(
+    exported: torch.export.ExportedProgram,
+    *,
+    output_path: Path,
+    checkpoint_sha256: str,
+    model_id: str,
+    run_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Convert an audited ATEN ExportedProgram to a float16 ML Program."""
+
+    _audit_torch_export_graph(exported)
+    return _convert_to_coreml(
+        exported,
+        output_path=output_path,
+        checkpoint_sha256=checkpoint_sha256,
+        export_backend=TORCH_EXPORT_BACKEND,
+        model_id=model_id,
+        run_manifest_sha256=run_manifest_sha256,
+    )
 
 
 def load_parity_observations(run_manifest_path: Path) -> tuple[Any, ...]:
@@ -555,6 +711,100 @@ def build_parity_fixture(
     }
 
 
+def rebuild_parity_fixture(
+    wrapper: nn.Module,
+    source_fixture_path: Path,
+    *,
+    output_path: Path,
+    batch_size: int = 16,
+    limit: int = 0,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Reuse audited RGB/landmark inputs while recomputing PyTorch predictions."""
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if limit < 0:
+        raise ValueError("limit must be non-negative")
+    source_fixture_path = source_fixture_path.resolve()
+    if not source_fixture_path.is_file():
+        raise FileNotFoundError(source_fixture_path)
+    source_fixture_sha256 = sha256_file(source_fixture_path)
+    with np.load(source_fixture_path, allow_pickle=False) as source_fixture:
+        images = np.array(source_fixture["images_rgb_uint8"], copy=True)
+        landmarks = np.array(source_fixture["landmarks_xy"], copy=True)
+        frame_indices = np.array(source_fixture["frame_index"], copy=True)
+        sample_ids = (
+            np.array(source_fixture["sample_id"], copy=True)
+            if "sample_id" in source_fixture.files
+            else np.asarray(
+                [f"frame:{int(frame_index)}" for frame_index in frame_indices],
+                dtype=str,
+            )
+        )
+
+    count = images.shape[0]
+    if images.dtype != np.uint8 or images.shape != (
+        count,
+        EXPECTED_IMAGE_SIZE,
+        EXPECTED_IMAGE_SIZE,
+        3,
+    ):
+        raise ValueError("source parity images must be uint8 [N,224,224,3]")
+    if landmarks.dtype != np.float32 or landmarks.shape != (
+        count,
+        len(EXPECTED_LANDMARK_INDICES),
+        2,
+    ):
+        raise ValueError("source parity landmarks must be float32 [N,4,2]")
+    if frame_indices.shape != (count,) or sample_ids.shape != (count,):
+        raise ValueError("source parity arrays have inconsistent lengths")
+    if count == 0:
+        raise ValueError("source parity fixture must not be empty")
+    if not np.all(np.isfinite(landmarks)) or np.any((landmarks < 0.0) | (landmarks > 1.0)):
+        raise ValueError("source parity landmarks must be finite and in [0,1]")
+    if limit:
+        selected = slice(0, min(limit, count))
+        images = images[selected]
+        landmarks = landmarks[selected]
+        frame_indices = frame_indices[selected]
+        sample_ids = sample_ids[selected]
+        count = images.shape[0]
+
+    predictions: list[float] = []
+    for start in range(0, count, batch_size):
+        end = min(start + batch_size, count)
+        image_tensor = torch.from_numpy(images[start:end]).permute(0, 3, 1, 2)
+        image_tensor = image_tensor.to(dtype=torch.float32).div(255.0)
+        landmark_tensor = torch.from_numpy(landmarks[start:end])
+        with torch.inference_mode():
+            output = wrapper(image_tensor, landmark_tensor).squeeze(1)
+        predictions.extend(float(value) for value in output.cpu().tolist())
+        if progress is not None:
+            progress(f"parity fixture {end}/{count}")
+
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_path,
+        images_rgb_uint8=images,
+        landmarks_xy=landmarks,
+        pytorch_depth_m=np.asarray(predictions, dtype=np.float32),
+        frame_index=frame_indices,
+        sample_id=sample_ids,
+    )
+    return {
+        "sample_count": count,
+        "sequence_id": "finger_movement_2030",
+        "image_shape": list(images.shape),
+        "landmark_shape": list(landmarks.shape),
+        "prediction_min_m": float(np.min(predictions)),
+        "prediction_max_m": float(np.max(predictions)),
+        "input_source_fixture_path": str(source_fixture_path),
+        "input_source_fixture_sha256": source_fixture_sha256,
+    }
+
+
 def artifact_record(path: Path) -> dict[str, Any]:
     path = path.resolve()
     if path.is_file():
@@ -580,18 +830,47 @@ def write_export_manifest(
     *,
     output_path: Path,
     source: StudentExportSource,
-    torchscript_path: Path,
+    torchscript_path: Path | None,
     coreml_path: Path,
     parity_fixture_path: Path,
-    trace_validation: Mapping[str, Any],
+    trace_validation: Mapping[str, Any] | None,
     coreml_conversion: Mapping[str, Any],
     parity_fixture: Mapping[str, Any],
+    exported_program_path: Path | None = None,
+    export_validation: Mapping[str, Any] | None = None,
+    model_id: str = "phase8_student",
+    export_backend: str | None = None,
 ) -> dict[str, Any]:
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    selected_backend = export_backend or (
+        TORCH_EXPORT_BACKEND if exported_program_path is not None else TORCHSCRIPT_BACKEND
+    )
+    if selected_backend == TORCH_EXPORT_BACKEND:
+        if exported_program_path is None or export_validation is None:
+            raise ValueError("torch.export manifest requires its .pt2 artifact and validation")
+        graph_artifacts = {"exported_program": artifact_record(exported_program_path)}
+        graph_validation = {"torch_export": dict(export_validation)}
+        transformer_strategy = (
+            "strict torch.export followed by run_decompositions({}); ATEN graph audited"
+        )
+    elif selected_backend == TORCHSCRIPT_BACKEND:
+        if torchscript_path is None or trace_validation is None:
+            raise ValueError("TorchScript manifest requires its trace artifact and validation")
+        graph_artifacts = {"torchscript": artifact_record(torchscript_path)}
+        graph_validation = {"torchscript": dict(trace_validation)}
+        transformer_strategy = (
+            "evaluation-equivalent explicit QKV matmul/softmax; trained weights unchanged"
+        )
+    else:
+        raise ValueError(f"unsupported export backend: {selected_backend}")
     manifest: dict[str, Any] = {
         "format": COREML_EXPORT_FORMAT,
         "format_version": COREML_EXPORT_FORMAT_VERSION,
+        "model": {
+            "model_id": model_id,
+            "export_backend": selected_backend,
+        },
         "target": {
             "device": TARGET_DEVICE,
             "camera": {
@@ -642,12 +921,11 @@ def write_export_manifest(
         },
         "conversion": {
             **dict(coreml_conversion),
-            "transformer_export_strategy": (
-                "evaluation-equivalent explicit QKV matmul/softmax; trained weights unchanged"
-            ),
+            "export_backend": selected_backend,
+            "transformer_export_strategy": transformer_strategy,
         },
         "validation": {
-            "torchscript": dict(trace_validation),
+            **graph_validation,
             "parity_fixture": dict(parity_fixture),
             "coreml_runtime": {
                 "status": "pending_macos_or_ios",
@@ -657,7 +935,7 @@ def write_export_manifest(
             },
         },
         "artifacts": {
-            "torchscript": artifact_record(torchscript_path),
+            **graph_artifacts,
             "coreml": artifact_record(coreml_path),
             "parity_fixture": artifact_record(parity_fixture_path),
         },
@@ -678,18 +956,25 @@ __all__ = [
     "COREML_EXPORT_FORMAT_VERSION",
     "EXPECTED_IMAGE_SIZE",
     "EXPECTED_LANDMARK_INDICES",
+    "FORBIDDEN_TORCH_EXPORT_OPERATOR_PREFIXES",
     "IMAGE_INPUT_NAME",
     "LANDMARK_INPUT_NAME",
     "OUTPUT_NAME",
+    "TORCHSCRIPT_BACKEND",
+    "TORCH_EXPORT_BACKEND",
     "CoreMLTraceWrapper",
     "StudentCoreMLWrapper",
     "StudentExportSource",
     "artifact_record",
     "build_parity_fixture",
+    "convert_exported_program_to_coreml",
     "convert_torchscript_to_coreml",
+    "export_student_for_coreml",
     "load_parity_observations",
     "load_student_export_source",
     "make_coreml_wrapper",
+    "make_export_wrapper",
+    "rebuild_parity_fixture",
     "sha256_file",
     "trace_student_for_coreml",
     "write_export_manifest",

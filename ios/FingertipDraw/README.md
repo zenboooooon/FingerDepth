@@ -1,8 +1,9 @@
 # Fingertip Draw iOS MVP
 
 固定した iPhone 15（`iPhone15,4`）/ iOS 26.6.1 の背面広角カメラで、MediaPipe の
-landmark 5–8 と Phase 8 student model から人差し指先の `(X, Y, Z)` を推定し、カメラ映像と
-X–Z パネルへ軌跡を描画する最小アプリです。
+landmark 5–8 と student model から人差し指先の `(X, Y, Z)` を推定し、カメラ映像と
+X–Z パネルへ軌跡を描画する最小アプリです。既存の Phase 8 モデルと、最新training runの
+best checkpoint（epoch 2）を `torch.export` から変換したモデルを画面上で切り替えられます。
 
 ## 固定条件
 
@@ -15,7 +16,7 @@ X–Z パネルへ軌跡を描画する最小アプリです。
 - 入力landmarkは 5, 6, 7, 8 の正規化 `(x, y)` のみ。MediaPipe relative-zは使用しない
 - Core ML出力は加工していない光軸方向深さ `Z [m]`
 - 逆投影座標系は x-right / y-down / z-forward
-- 起動時にCore MLのcheckpoint SHA、対象端末metadata、入出力名・型・shapeを検証する
+- 起動時に両Core MLのモデル別checkpoint SHA、変換metadata、入出力名・型・shapeを検証する
 
 端末、OS、解像度、実測FOV、モデルのいずれかが固定条件と異なる場合は推論を開始しません。
 
@@ -29,10 +30,10 @@ cd /path/to/depth_for_task
 uv sync --project environments/coreml_export
 uv pip install --python environments/coreml_export/.venv/bin/python --no-deps -e .
 
-# Linuxで生成済みのモデルを再生成する場合だけ実行
+# 最新runのbest checkpointをtorch.export経由で再変換する場合だけ実行
 environments/coreml_export/.venv/bin/python scripts/export_student_coreml.py
 
-# macOS Core ML runtimeで604フレームをPyTorch基準値と比較
+# 最新モデルをmacOS Core ML runtimeで604フレームのPyTorch基準値と比較
 environments/coreml_export/.venv/bin/python scripts/verify_student_coreml.py
 
 cd ios/FingertipDraw
@@ -47,18 +48,20 @@ XcodeではSigning Teamを選び、接続したiPhone 15を実行先にします
 
 ## 操作
 
+- `旧 / 最新`: 使用するCore MLモデルを切替。切替時は描画を停止し、旧・新の軌跡が混ざらないよう消去
 - `描画`: 新しい推定点を軌跡へ追加
 - `停止`: 推定表示は続けたまま軌跡への追加を停止
 - `消去`: 現在の軌跡を消去
 
-画面上部には深さ、実効fps、MediaPipe/student/全体の遅延、カメラ内部パラメータが実測か近似かを
-表示します。各推定値はアプリのDocuments内に `trajectory.csv`、条件は `session.json` として保存
+画面上部には選択モデル、深さ、実効fps、MediaPipe/student/全体の遅延、カメラ内部パラメータが
+実測か近似かを表示します。各推定値はアプリのDocuments内に `trajectory.csv`、条件は
+`session.json` として保存されます。CSVの各行には実際に使ったmodel IDとcheckpoint SHAも記録
 されます。
 
 ## 現在の検証境界
 
-- Core MLパッケージ生成と入出力仕様監査はLinuxで完了
+- 旧・最新のCore MLパッケージ生成と入出力仕様・provenance監査はLinuxで完了
 - portrait座標からpreview用未回転座標への変換、画素丸め、逆投影、FOVゲートの単体テストを用意
-- Core ML runtimeの数値一致、Core Image前処理golden試験の作成・実行、Xcode buildはMacで行う
+- 最新モデルのCore ML runtime数値一致、Core Image前処理golden試験、Xcode buildはMacで行う
 - カメラ向き、軌跡重畳、実測K、速度、発熱、実距離精度は固定した実機で確認する
 - 平滑化、ARKit、移動カメラ座標への変換はまだ含めない

@@ -13,7 +13,11 @@ final class CameraViewController: UIViewController {
     private let drawButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
     private let clearButton = UIButton(type: .system)
+    private let modelControl = UISegmentedControl(
+        items: StudentDepthModelVariant.allCases.map { $0.descriptor.shortName }
+    )
     private let trajectory = TrajectoryStore()
+    private var selectedModel = StudentDepthModelVariant.defaultVariant
     private var pipeline: InferencePipeline?
     private var logger: SessionLogger?
     private var isDrawing = false
@@ -31,9 +35,9 @@ final class CameraViewController: UIViewController {
             return
         }
         do {
-            pipeline = try InferencePipeline()
+            pipeline = try InferencePipeline(initialModel: selectedModel)
             pipeline?.delegate = self
-            logger = try SessionLogger()
+            logger = try SessionLogger(initialModel: selectedModel)
         } catch {
             showBlockingMessage(error.localizedDescription)
             return
@@ -78,11 +82,16 @@ final class CameraViewController: UIViewController {
         configure(button: stopButton, title: "停止", color: .systemOrange, action: #selector(stopDrawing))
         configure(button: clearButton, title: "消去", color: .systemGray, action: #selector(clearDrawing))
         let controls = UIStackView(arrangedSubviews: [drawButton, stopButton, clearButton])
+        modelControl.selectedSegmentIndex =
+            StudentDepthModelVariant.allCases.firstIndex(of: selectedModel) ?? 0
+        modelControl.selectedSegmentTintColor = .systemIndigo
+        modelControl.backgroundColor = UIColor.black.withAlphaComponent(0.62)
+        modelControl.addTarget(self, action: #selector(selectDepthModel), for: .valueChanged)
         controls.axis = .horizontal
         controls.spacing = 12
         controls.distribution = .fillEqually
 
-        [statusLabel, depthLabel, controls].forEach {
+        [statusLabel, depthLabel, modelControl, controls].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview($0)
         }
@@ -93,6 +102,10 @@ final class CameraViewController: UIViewController {
             statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 46),
             depthLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             depthLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 14),
+            modelControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            modelControl.bottomAnchor.constraint(equalTo: controls.topAnchor, constant: -10),
+            modelControl.widthAnchor.constraint(equalToConstant: 220),
+            modelControl.heightAnchor.constraint(equalToConstant: 34),
             controls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
             controls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
             controls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -14),
@@ -140,7 +153,7 @@ final class CameraViewController: UIViewController {
                 try self.configureSession()
                 self.session.startRunning()
                 DispatchQueue.main.async {
-                    self.statusLabel.text = "検出待ち · 30 fps\n36 mm相当 / 固定カメラ"
+                    self.statusLabel.text = "\(self.selectedModel.descriptor.shortName) · 検出待ち · 30 fps\n36 mm相当 / 固定カメラ"
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -239,11 +252,30 @@ final class CameraViewController: UIViewController {
         }
     }
 
+    @objc private func selectDepthModel() {
+        let variants = StudentDepthModelVariant.allCases
+        guard variants.indices.contains(modelControl.selectedSegmentIndex) else {
+            return
+        }
+        let model = variants[modelControl.selectedSegmentIndex]
+        guard model != selectedModel else { return }
+        selectedModel = model
+        modelControl.isEnabled = false
+        isDrawing = false
+        drawButton.configuration?.baseBackgroundColor = UIColor.systemCyan.withAlphaComponent(0.88)
+        trajectory.clear()
+        overlayView.snapshot = nil
+        depthLabel.text = "— cm"
+        statusLabel.text = "\(model.descriptor.displayName)へ切替中"
+        pipeline?.selectModel(model)
+    }
+
     private func showBlockingMessage(_ message: String) {
         statusLabel.text = message
         statusLabel.backgroundColor = UIColor.systemRed.withAlphaComponent(0.80)
         drawButton.isEnabled = false
         stopButton.isEnabled = false
+        modelControl.isEnabled = false
     }
 }
 
@@ -259,6 +291,9 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
 
 extension CameraViewController: InferencePipelineDelegate {
     func inferencePipeline(_ pipeline: InferencePipeline, didProduce update: InferenceUpdate) {
+        guard update.modelVariant == selectedModel else {
+            return
+        }
         let now = CACurrentMediaTime()
         if let previous = lastUpdateTime {
             let instantaneous = 1.0 / max(now - previous, 1e-6)
@@ -283,7 +318,8 @@ extension CameraViewController: InferencePipelineDelegate {
         depthLabel.text = String(format: "%.1f cm", update.cameraPointM.z * 100.0)
         statusLabel.backgroundColor = UIColor.black.withAlphaComponent(0.62)
         statusLabel.text = String(
-            format: "%@ · %.1f fps\nhand %.1f / student %.1f / total %.1f ms",
+            format: "%@ · %@ · %.1f fps\nhand %.1f / student %.1f / total %.1f ms",
+            update.modelVariant.descriptor.shortName,
             update.intrinsics.source == .avFoundation ? "K:実測" : "K:近似",
             displayedFPS,
             update.handLatencyMS,
@@ -291,6 +327,15 @@ extension CameraViewController: InferencePipelineDelegate {
             update.totalLatencyMS
         )
         logger?.append(update)
+    }
+
+    func inferencePipeline(_ pipeline: InferencePipeline, didActivate model: StudentDepthModelVariant) {
+        guard model == selectedModel else { return }
+        modelControl.isEnabled = true
+        depthLabel.text = "— cm"
+        lastUpdateTime = nil
+        displayedFPS = 0
+        statusLabel.text = "\(model.descriptor.displayName)へ切替完了"
     }
 
     func inferencePipeline(_ pipeline: InferencePipeline, didRejectCaptureConfiguration message: String) {

@@ -14,7 +14,6 @@ enum TargetConfiguration {
     static let requestedZoomFactor = requestedEquivalentFocalLengthMM / nativeEquivalentFocalLengthMM
     static let trainingFocalLengthPixels: Float = 1832.9295592659223
     static let focalLengthRelativeTolerance: Float = 0.10
-    static let checkpointSHA256 = "e2e8941d2187e20dc716580fbbafb294cc9809db54b467a2d09fb52b39492252"
 
     static var currentHardwareIdentifier: String {
         var information = utsname()

@@ -50,6 +50,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--max-frames", type=_positive_int)
+    parser.add_argument(
+        "--checkpoint-interval-frames",
+        type=_positive_int,
+        default=100,
+        help="Durably checkpoint completed outcomes in batches of this size.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume the exact interrupted run recorded in <output-dir>/.depth-pro-progress.jsonl."
+        ),
+    )
     return parser
 
 
@@ -76,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
         expected_prepared_manifest_sha256=args.expected_prepared_manifest_sha256,
         teacher_selection_report_path=args.teacher_selection_report,
         max_frames=args.max_frames,
+        checkpoint_interval_frames=args.checkpoint_interval_frames,
+        resume=args.resume,
     )
     print(
         json.dumps(

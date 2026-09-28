@@ -14,10 +14,11 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-DEFAULT_EXPORT_DIR = Path("outputs/phase8_student_coreml_iphone15")
+DEFAULT_EXPORT_DIR = Path("outputs/student_depth_coreml_latest")
 DEFAULT_MANIFEST = DEFAULT_EXPORT_DIR / "export_manifest.json"
 EXPORT_FORMAT = "fingertip-depth-student-coreml-export"
-EXPORT_FORMAT_VERSION = 1
+EXPORT_FORMAT_VERSION = 2
+SUPPORTED_EXPORT_FORMAT_VERSIONS = (1, 2)
 IMAGE_NAME = "image"
 LANDMARK_NAME = "landmarks_xy"
 OUTPUT_NAME = "depth_m"
@@ -30,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         type=Path,
-        default=DEFAULT_EXPORT_DIR / "StudentDepth.mlpackage",
+        default=DEFAULT_EXPORT_DIR / "StudentDepthLatest.mlpackage",
     )
     parser.add_argument(
         "--fixture",
@@ -144,9 +145,15 @@ def _resolve_checkpoint(
     source = _mapping(manifest.get("source"), field="source")
     declared = Path(str(source.get("checkpoint_path", "")))
     candidates = [declared]
+    declared_parts = declared.parts
+    if "outputs" in declared_parts:
+        outputs_index = declared_parts.index("outputs")
+        candidates.append(
+            manifest_path.parent.parent.joinpath(*declared_parts[outputs_index + 1 :])
+        )
     if declared.name:
         # Absolute paths in export manifests become stale when a repository is
-        # copied to a Mac. The run and export directories remain siblings.
+        # copied to a Mac. Retain the legacy one-level relocation fallback.
         candidates.append(manifest_path.parent.parent / declared.parent.name / declared.name)
     for candidate in candidates:
         resolved = candidate.expanduser().resolve()
@@ -212,9 +219,10 @@ def validate_export_provenance(
 
     manifest_path = manifest_path.resolve()
     manifest = _read_json(manifest_path)
+    format_version = manifest.get("format_version")
     if (
         manifest.get("format") != EXPORT_FORMAT
-        or manifest.get("format_version") != EXPORT_FORMAT_VERSION
+        or format_version not in SUPPORTED_EXPORT_FORMAT_VERSIONS
     ):
         raise ValueError("unsupported Core ML export manifest")
 
@@ -233,7 +241,7 @@ def validate_export_provenance(
             "path": str(manifest_path),
             "sha256": sha256_file(manifest_path),
             "format": EXPORT_FORMAT,
-            "format_version": EXPORT_FORMAT_VERSION,
+            "format_version": int(format_version),
         },
         "coreml_model": _verify_artifact(
             model_path, artifacts.get("coreml"), field="artifacts.coreml"
@@ -293,6 +301,9 @@ def validate_coreml_contract(
     contract: Mapping[str, Any],
     *,
     expected_checkpoint_sha256: str,
+    expected_model_id: str | None = None,
+    expected_run_manifest_sha256: str | None = None,
+    expected_export_backend: str | None = None,
 ) -> dict[str, Any]:
     inputs = _mapping(contract.get("inputs"), field="Core ML inputs")
     outputs = _mapping(contract.get("outputs"), field="Core ML outputs")
@@ -338,6 +349,19 @@ def validate_coreml_contract(
         raise ValueError("Core ML landmark-index metadata differs from the iOS contract")
     if metadata.get("image_resize") != "direct_bicubic_224x224_no_crop":
         raise ValueError("Core ML image-resize metadata differs from the iOS contract")
+    expected_metadata = {
+        "model_id": expected_model_id,
+        "run_manifest_sha256": expected_run_manifest_sha256,
+        "export_backend": expected_export_backend,
+    }
+    for key, expected_value in expected_metadata.items():
+        if expected_value is None:
+            continue
+        if metadata.get(key) != expected_value:
+            raise ValueError(
+                f"Core ML {key} metadata differs from export manifest: "
+                f"expected {expected_value!r}, got {metadata.get(key)!r}"
+            )
     return {
         "inputs": {name: dict(value) for name, value in inputs.items()},
         "outputs": {name: dict(value) for name, value in outputs.items()},
@@ -369,9 +393,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     model = ct.models.MLModel(str(args.model), compute_units=ct.ComputeUnit.ALL)
     source = _mapping(manifest.get("source"), field="source")
+    expected_model_id: str | None = None
+    expected_export_backend: str | None = None
+    expected_run_manifest_sha256: str | None = None
+    if manifest.get("format_version") == 2:
+        model_claim = _mapping(manifest.get("model"), field="model")
+        expected_model_id = str(model_claim.get("model_id"))
+        expected_export_backend = str(model_claim.get("export_backend"))
+        expected_run_manifest_sha256 = _sha256(
+            source.get("run_manifest_sha256"),
+            field="source.run_manifest_sha256",
+        )
     model_contract = validate_coreml_contract(
         extract_coreml_contract(model),
         expected_checkpoint_sha256=str(source.get("checkpoint_sha256")),
+        expected_model_id=expected_model_id,
+        expected_run_manifest_sha256=expected_run_manifest_sha256,
+        expected_export_backend=expected_export_backend,
     )
 
     with np.load(args.fixture, allow_pickle=False) as fixture:

@@ -40,7 +40,7 @@ final class OverlayView: UIView {
         let capturePoint = FrameGeometry.captureDevicePoint(
             fromPortraitNormalized: normalized
         )
-        previewLayer.layerPointConverted(
+        return previewLayer.layerPointConverted(
             fromCaptureDevicePoint: CGPoint(
                 x: CGFloat(capturePoint.x),
                 y: CGFloat(capturePoint.y)

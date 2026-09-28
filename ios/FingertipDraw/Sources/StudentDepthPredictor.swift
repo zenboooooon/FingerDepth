@@ -11,9 +11,9 @@ final class StudentDepthPredictor {
     }
 
     enum PredictorError: LocalizedError {
-        case modelMissing
-        case modelMetadataMismatch
-        case modelInterfaceMismatch
+        case modelMissing(String)
+        case modelMetadataMismatch(String)
+        case modelInterfaceMismatch(String)
         case pixelBufferAllocation
         case resizeFailed
         case outputMissing
@@ -21,9 +21,11 @@ final class StudentDepthPredictor {
 
         var errorDescription: String? {
             switch self {
-            case .modelMissing: return "StudentDepth.mlmodelc がアプリに含まれていません"
-            case .modelMetadataMismatch: return "Core MLモデルが固定checkpointまたは対象端末と一致しません"
-            case .modelInterfaceMismatch: return "Core MLモデルの入出力仕様が期待値と一致しません"
+            case .modelMissing(let name): return "\(name).mlmodelc がアプリに含まれていません"
+            case .modelMetadataMismatch(let name):
+                return "\(name) のCore ML metadataが期待する学習重み・変換方式と一致しません"
+            case .modelInterfaceMismatch(let name):
+                return "\(name) のCore ML入出力仕様が期待値と一致しません"
             case .pixelBufferAllocation: return "224×224入力バッファを作成できません"
             case .resizeFailed: return "カメラ画像を224×224へ変換できません"
             case .outputMissing: return "Core ML出力 depth_m がありません"
@@ -32,18 +34,26 @@ final class StudentDepthPredictor {
         }
     }
 
+    let descriptor: StudentDepthModelDescriptor
     private let model: MLModel
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var pixelBufferPool: CVPixelBufferPool?
 
-    init(bundle: Bundle = .main) throws {
-        guard let url = bundle.url(forResource: "StudentDepth", withExtension: "mlmodelc") else {
-            throw PredictorError.modelMissing
+    init(
+        descriptor: StudentDepthModelDescriptor,
+        bundle: Bundle = .main
+    ) throws {
+        guard let url = bundle.url(
+            forResource: descriptor.resourceName,
+            withExtension: "mlmodelc"
+        ) else {
+            throw PredictorError.modelMissing(descriptor.resourceName)
         }
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .all
         let loadedModel = try MLModel(contentsOf: url, configuration: configuration)
-        try Self.validateModel(loadedModel)
+        try Self.validateModel(loadedModel, descriptor: descriptor)
+        self.descriptor = descriptor
         model = loadedModel
         pixelBufferPool = Self.makePixelBufferPool()
     }
@@ -109,14 +119,29 @@ final class StudentDepthPredictor {
         return destination
     }
 
-    private static func validateModel(_ model: MLModel) throws {
+    private static func validateModel(
+        _ model: MLModel,
+        descriptor: StudentDepthModelDescriptor
+    ) throws {
         let description = model.modelDescription
         guard let metadata = description.metadata[.creatorDefinedKey] as? [String: String],
-              metadata["checkpoint_sha256"] == TargetConfiguration.checkpointSHA256,
+              metadata["checkpoint_sha256"] == descriptor.checkpointSHA256,
               metadata["input_landmark_indices"] == "5,6,7,8",
               metadata["image_resize"] == "direct_bicubic_224x224_no_crop",
               metadata["target_device"] == "iPhone 15 (iPhone15,4), iOS 26.6.1" else {
-            throw PredictorError.modelMetadataMismatch
+            throw PredictorError.modelMetadataMismatch(descriptor.displayName)
+        }
+        if let expected = descriptor.runManifestSHA256,
+           metadata["run_manifest_sha256"] != expected {
+            throw PredictorError.modelMetadataMismatch(descriptor.displayName)
+        }
+        if let expected = descriptor.exportBackend,
+           metadata["export_backend"] != expected {
+            throw PredictorError.modelMetadataMismatch(descriptor.displayName)
+        }
+        if descriptor.runManifestSHA256 != nil,
+           metadata["model_id"] != descriptor.id {
+            throw PredictorError.modelMetadataMismatch(descriptor.displayName)
         }
 
         let inputs = description.inputDescriptionsByName
@@ -129,7 +154,7 @@ final class StudentDepthPredictor {
               landmarks.type == .multiArray,
               landmarks.multiArrayConstraint?.shape.map({ $0.intValue }) == [1, 4, 2],
               landmarks.multiArrayConstraint?.dataType == .float32 else {
-            throw PredictorError.modelInterfaceMismatch
+            throw PredictorError.modelInterfaceMismatch(descriptor.displayName)
         }
 
         let outputs = description.outputDescriptionsByName
@@ -138,7 +163,7 @@ final class StudentDepthPredictor {
               depth.type == .multiArray,
               depth.multiArrayConstraint?.shape.map({ $0.intValue }) == [1, 1],
               depth.multiArrayConstraint?.dataType == .float32 else {
-            throw PredictorError.modelInterfaceMismatch
+            throw PredictorError.modelInterfaceMismatch(descriptor.displayName)
         }
     }
 

@@ -1,0 +1,187 @@
+{
+  "format": "fingertip-depth-student-coreml-export",
+  "format_version": 2,
+  "model": {
+    "model_id": "latest_training_pipeline",
+    "export_backend": "torch.export"
+  },
+  "target": {
+    "device": {
+      "marketing_name": "iPhone 15",
+      "hardware_identifier": "iPhone15,4",
+      "operating_system": "iOS 26.6.1"
+    },
+    "camera": {
+      "position": "back",
+      "device_type": "builtInWideAngleCamera",
+      "resolution": [
+        1080,
+        1920
+      ],
+      "frames_per_second": 30,
+      "orientation": "portrait",
+      "full_frame_equivalent_focal_length_mm": 36.0,
+      "native_equivalent_focal_length_mm": 26.0,
+      "requested_zoom_factor": 1.3846153846153846,
+      "stabilization": "off"
+    }
+  },
+  "source": {
+    "run_manifest_path": "/home/s6323038/depth_for_task/outputs/training_pipeline/runs/c0de470943c02f47452db57bcfc98f2af920e8f56d47ab981b7f43b9097a5a6a/run_manifest.json",
+    "run_manifest_sha256": "e699adf05b7f2f3507e3920304bc6b11ae135846df2f3fa8cb677879e33b2a2a",
+    "checkpoint_path": "/home/s6323038/depth_for_task/outputs/training_pipeline/runs/c0de470943c02f47452db57bcfc98f2af920e8f56d47ab981b7f43b9097a5a6a/best_checkpoint.pt",
+    "checkpoint_sha256": "66829e68ec5901d45c2805b62f4221b824bbbb2d215af7b14957c9efedbd600a",
+    "checkpoint_epoch": 2,
+    "dataset_manifest_sha256": "a33112d5350f853856f0fe6e1c661a70362e3b6a4c0bca5d298e75b3ab5c0ff0"
+  },
+  "interface": {
+    "image": {
+      "name": "image",
+      "coreml_type": "RGB image",
+      "size": [
+        224,
+        224
+      ],
+      "source_range": [
+        0,
+        255
+      ],
+      "coreml_scale": 0.00392156862745098,
+      "resize": "whole portrait frame directly to 224x224; no crop or letterbox",
+      "normalization_mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "normalization_std": [
+        0.229,
+        0.224,
+        0.225
+      ]
+    },
+    "landmarks": {
+      "name": "landmarks_xy",
+      "shape": [
+        1,
+        4,
+        2
+      ],
+      "indices": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "coordinate_range": [
+        0.0,
+        1.0
+      ],
+      "internal_transform": "2*x-1",
+      "relative_z_included": false
+    },
+    "output": {
+      "name": "depth_m",
+      "shape": [
+        1,
+        1
+      ],
+      "unit": "metre",
+      "meaning": "index fingertip camera-axis Z; raw scalar without clipping"
+    }
+  },
+  "conversion": {
+    "coremltools_version": "9.0",
+    "model_type": "mlProgram",
+    "specification_version": 9,
+    "compute_precision": "float16",
+    "minimum_deployment_target": "iOS 18 (application target is iOS 26.0)",
+    "export_backend": "torch.export",
+    "model_id": "latest_training_pipeline",
+    "transformer_export_strategy": "strict torch.export followed by run_decompositions({}); ATEN graph audited"
+  },
+  "validation": {
+    "torch_export": {
+      "case_count": 1,
+      "trained_pytorch_vs_exported_program_mean_absolute_difference_m": 0.0,
+      "trained_pytorch_vs_exported_program_max_absolute_difference_m": 0.0,
+      "fixed_shape_export": true,
+      "batch_size": 1,
+      "strict": true,
+      "decomposition_table": "empty",
+      "dialect": "ATEN",
+      "operator_counts": {
+        "<built-in function getitem>": 36,
+        "aten.add.Tensor": 33,
+        "aten.cat.default": 2,
+        "aten.clone.default": 46,
+        "aten.conv2d.default": 1,
+        "aten.div.Tensor": 1,
+        "aten.expand.default": 2,
+        "aten.gelu.default": 16,
+        "aten.layer_norm.default": 32,
+        "aten.linear.default": 60,
+        "aten.mul.Tensor": 1,
+        "aten.permute.default": 14,
+        "aten.scaled_dot_product_attention.default": 14,
+        "aten.select.int": 7,
+        "aten.slice.Tensor": 1,
+        "aten.squeeze.dim": 3,
+        "aten.stack.default": 1,
+        "aten.sub.Tensor": 2,
+        "aten.transpose.int": 25,
+        "aten.unbind.int": 12,
+        "aten.unsqueeze.default": 4,
+        "aten.view.default": 43
+      },
+      "forbidden_operators": [],
+      "node_count": 557
+    },
+    "parity_fixture": {
+      "sample_count": 604,
+      "sequence_id": "finger_movement_2030",
+      "image_shape": [
+        604,
+        224,
+        224,
+        3
+      ],
+      "landmark_shape": [
+        604,
+        4,
+        2
+      ],
+      "prediction_min_m": 0.32566824555397034,
+      "prediction_max_m": 0.4301483929157257,
+      "input_source_fixture_path": "/home/s6323038/depth_for_task/outputs/phase8_student_coreml_iphone15/coreml_parity_inputs.npz",
+      "input_source_fixture_sha256": "2ae8de98c98dd6982c66f58372c2c24e9ba68eac7436d6bba4d29ef20dfaeb7c"
+    },
+    "coreml_runtime": {
+      "status": "pending_macos_or_ios",
+      "mean_absolute_difference_limit_m": 0.001,
+      "max_absolute_difference_limit_m": 0.003,
+      "reason": "Core ML prediction is unavailable on Linux"
+    }
+  },
+  "artifacts": {
+    "exported_program": {
+      "path": "/home/s6323038/depth_for_task/outputs/student_depth_coreml_latest/StudentDepthLatest.pt2",
+      "sha256": "fe335b8f668fe0cf03a4d037d37c49f887c5fa7d5f40ec0c3ed7ad98b7e8bef9",
+      "byte_count": 103291911
+    },
+    "coreml": {
+      "path": "/home/s6323038/depth_for_task/outputs/student_depth_coreml_latest/StudentDepthLatest.mlpackage",
+      "sha256": "59c08c93499442199e7833fa3c842effa82697a48bf8421720be66d317d76130",
+      "byte_count": 51167976
+    },
+    "parity_fixture": {
+      "path": "/home/s6323038/depth_for_task/outputs/student_depth_coreml_latest/coreml_parity_inputs.npz",
+      "sha256": "3a726c531f798e47be21b8b5cf048593b39560705ede9f30e5dd3f15ec4c862e",
+      "byte_count": 60295118
+    }
+  },
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.7.0+cu126",
+    "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.39"
+  }
+}

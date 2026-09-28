@@ -21,6 +21,46 @@ uv run pytest
 初回のMetric3D実行時には固定commitのソースとv2-S checkpoint（約150 MB）を取得します。
 checkpointはデシリアライズ前にSHA-256を照合し、weights-onlyで読み込みます。
 
+## 動画を追加してStudentを学習
+
+root環境と依存関係を分離したDepth Pro環境を、lock済みの構成で準備します。
+
+```bash
+uv sync --locked
+uv sync --locked --project environments/depth_pro
+uv run --locked python scripts/download_hand_landmarker.py
+```
+
+新しい学習動画は `data/training_videos/train/` へ追加します。`validation/` は
+sequence-held-out評価用の固定集合です。学習動画を増やすたびに追加・再分割せず、同じ撮影sessionの
+clipや再encodeをtrain/validationへ跨がせないでください。
+
+```bash
+cp /path/to/new_capture.MOV data/training_videos/train/new_capture.MOV
+uv run --locked fingertip-train run
+```
+
+既定では `.mov` / `.mp4` / `.m4v` を検出し、検証済み中間成果物をcacheして変更のない動画を
+再処理しません。実行前の確認には `fingertip-train status` または
+`fingertip-train run --dry-run`、同一datasetを意図的に再学習するときだけ `--force-train` を
+使います。別設定は `--config path/to/config.toml` で指定できます。
+
+ラベル生成が中断された場合も、同じ `fingertip-train run` を再実行してください。完全性を
+検証した準備済みframeと、チェックポイント済みのDepth Pro結果を自動的に再利用し、最後の
+チェックポイントから再開します。保存間隔は
+`configs/training_pipeline.toml` の `[teacher] checkpoint_interval_frames` で指定でき、既定は
+100枚です。正常完了時は100枚未満の端数も保存します。動画、焦点距離、モデル、設定、または
+関連実装が変わった場合は、以前の進捗を混在させず再利用を拒否します。最終cacheは全成果物の
+検証が完了するまで公開されません。
+
+既定の動画焦点距離は既存iPhone実験に合わせた **36 mm相当の近似値**であり、校正値では
+ありません。別のカメラやzoomでは `configs/training_pipeline.toml` の
+`video_overrides` にproject-relative動画pathと正しい35 mm相当値を設定してから実行してください。
+詳細は [training video guide](data/training_videos/README.md) を参照してください。
+
+後段のPhaseごとの個別commandは、監査済み旧成果物の再現や段階別debug用のlegacy手順として
+残しています。通常の動画追加・学習には上記の `fingertip-train` を使用してください。
+
 ### Runtime requirement
 
 固定したupstream decoderが内部tensorを`cuda:0`へ生成するため、現実装はNVIDIA CUDA GPUの

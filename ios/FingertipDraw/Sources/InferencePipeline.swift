@@ -6,6 +6,7 @@ import UIKit
 
 struct InferenceUpdate {
     let timestampMS: Int
+    let modelVariant: StudentDepthModelVariant
     let landmarksXY: [SIMD2<Float>]
     let fingertipPixel: SIMD2<Float>
     let cameraPointM: SIMD3<Float>
@@ -18,6 +19,7 @@ struct InferenceUpdate {
 
 protocol InferencePipelineDelegate: AnyObject {
     func inferencePipeline(_ pipeline: InferencePipeline, didProduce update: InferenceUpdate)
+    func inferencePipeline(_ pipeline: InferencePipeline, didActivate model: StudentDepthModelVariant)
     func inferencePipeline(_ pipeline: InferencePipeline, didFail message: String)
     func inferencePipeline(_ pipeline: InferencePipeline, didRejectCaptureConfiguration message: String)
 }
@@ -26,6 +28,7 @@ final class InferencePipeline: NSObject {
     private struct Frame {
         let sampleBuffer: CMSampleBuffer
         let timestampMS: Int
+        let modelVariant: StudentDepthModelVariant
         let submittedAt: CFTimeInterval
         let intrinsics: CameraIntrinsics
     }
@@ -33,15 +36,27 @@ final class InferencePipeline: NSObject {
     weak var delegate: InferencePipelineDelegate?
 
     private let queue = DispatchQueue(label: "jp.ac.fingertipdepth.inference")
-    private let predictor: StudentDepthPredictor
+    private let predictors: [StudentDepthModelVariant: StudentDepthPredictor]
+    private var activeModel: StudentDepthModelVariant
     private var landmarker: HandLandmarker!
     private var inFlight: Frame?
     private var pendingLatest: Frame?
     private var lastTimestampMS = -1
     private var captureConditionFailureReported = false
 
-    init(bundle: Bundle = .main) throws {
-        predictor = try StudentDepthPredictor(bundle: bundle)
+    init(
+        bundle: Bundle = .main,
+        initialModel: StudentDepthModelVariant = .defaultVariant
+    ) throws {
+        var loadedPredictors: [StudentDepthModelVariant: StudentDepthPredictor] = [:]
+        for variant in StudentDepthModelVariant.allCases {
+            loadedPredictors[variant] = try StudentDepthPredictor(
+                descriptor: variant.descriptor,
+                bundle: bundle
+            )
+        }
+        predictors = loadedPredictors
+        activeModel = initialModel
         super.init()
         guard let modelPath = bundle.path(forResource: "hand_landmarker", ofType: "task") else {
             throw PipelineError.handModelMissing
@@ -55,6 +70,18 @@ final class InferencePipeline: NSObject {
         options.minTrackingConfidence = 0.5
         options.handLandmarkerLiveStreamDelegate = self
         landmarker = try HandLandmarker(options: options)
+    }
+
+    func selectModel(_ model: StudentDepthModelVariant) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.activeModel = model
+            self.pendingLatest = nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.delegate?.inferencePipeline(self, didActivate: model)
+            }
+        }
     }
 
     func enqueue(_ sampleBuffer: CMSampleBuffer) {
@@ -79,6 +106,7 @@ final class InferencePipeline: NSObject {
             let frame = Frame(
                 sampleBuffer: sampleBuffer,
                 timestampMS: timestampMS,
+                modelVariant: self.activeModel,
                 submittedAt: CACurrentMediaTime(),
                 intrinsics: intrinsics
             )
@@ -112,6 +140,10 @@ final class InferencePipeline: NSObject {
             finishCurrentFrame(errorMessage: "MediaPipeの結果とカメラフレームを対応付けられません")
             return
         }
+        guard frame.modelVariant == activeModel else {
+            finishCurrentFrame(errorMessage: nil)
+            return
+        }
         if let error {
             finishCurrentFrame(errorMessage: error.localizedDescription)
             return
@@ -134,6 +166,9 @@ final class InferencePipeline: NSObject {
         }
 
         do {
+            guard let predictor = predictors[frame.modelVariant] else {
+                throw PipelineError.depthModelMissing
+            }
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) else {
                 throw PipelineError.pixelBufferMissing
             }
@@ -154,6 +189,7 @@ final class InferencePipeline: NSObject {
             let handednessScore = result.handedness.first?.first?.score
             let update = InferenceUpdate(
                 timestampMS: timestampMS,
+                modelVariant: frame.modelVariant,
                 landmarksXY: landmarks,
                 fingertipPixel: fingertipPixel,
                 cameraPointM: cameraPoint,
@@ -207,11 +243,13 @@ extension InferencePipeline: HandLandmarkerLiveStreamDelegate {
 
 enum PipelineError: LocalizedError {
     case handModelMissing
+    case depthModelMissing
     case pixelBufferMissing
 
     var errorDescription: String? {
         switch self {
         case .handModelMissing: return "hand_landmarker.task がアプリに含まれていません"
+        case .depthModelMissing: return "選択された深さモデルがロードされていません"
         case .pixelBufferMissing: return "カメラフレームに画像バッファがありません"
         }
     }

@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 fingertip-depth = "fingertip_depth.cli:main"
+fingertip-train = "fingertip_depth.training_cli:main"
 
 [dependency-groups]
 dev = [

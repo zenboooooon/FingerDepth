@@ -1,7 +1,7 @@
 [project]
 name = "fingertip-depth-coreml-export"
 version = "0.1.0"
-description = "Pinned uv environment for exporting the Phase 8 student to Core ML"
+description = "Pinned uv environment for exporting fingertip-depth students to Core ML"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "coremltools==9.0",
