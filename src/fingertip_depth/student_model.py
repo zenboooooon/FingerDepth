@@ -1,4 +1,4 @@
-"""Single-frame ViT and hand-landmark Transformer for fingertip depth."""
+'画像特徴を抽出するViTと手ランドマーク特徴を扱うTransformerを組み合わせ、指先の深度を推定するモデルを定義します。'
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from .constants import DEFAULT_FEATURE_LANDMARK_INDICES, HAND_LANDMARK_NAMES
 DEFAULT_IMAGE_ENCODER = "vit_small_patch16_224.dino"
 
 
+# ランドマーク番号が範囲内で重複のない選択か検証します。
 def _validate_landmark_indices(indices: Sequence[int]) -> tuple[int, ...]:
     selected = tuple(int(index) for index in indices)
     if not selected:
@@ -29,6 +30,7 @@ def _validate_landmark_indices(indices: Sequence[int]) -> tuple[int, ...]:
     return selected
 
 
+# 生徒モデルの入力寸法や層構成など、ネットワーク設計の設定です。
 @dataclass(frozen=True, slots=True)
 class StudentModelConfig:
     """Architecture configuration for the first Phase 8 baseline."""
@@ -41,6 +43,7 @@ class StudentModelConfig:
     fusion_mlp_ratio: float = 4.0
     dropout: float = 0.1
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
@@ -58,6 +61,7 @@ class StudentModelConfig:
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["landmark_indices"] = list(self.landmark_indices)
@@ -65,6 +69,7 @@ class StudentModelConfig:
         return value
 
 
+# ランドマーク種別ごとの学習可能なトークン表現を管理します。
 class LandmarkTypeTokenBank(nn.Module):
     """One independent token Parameter for every MediaPipe hand landmark.
 
@@ -73,6 +78,7 @@ class LandmarkTypeTokenBank(nn.Module):
     bit-for-bit unchanged even when AdamW weight decay is enabled.
     """
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(self, *, embedding_dim: int, trainable_indices: Sequence[int]) -> None:
         super().__init__()
         if embedding_dim <= 0:
@@ -86,6 +92,7 @@ class LandmarkTypeTokenBank(nn.Module):
             nn.init.trunc_normal_(token, std=0.02)
             token.requires_grad_(index in selected)
 
+    # 入力をニューラルネットワークに通し、予測値を返します。
     def forward(self, indices: Sequence[int] | None = None) -> torch.Tensor:
         requested = (
             self.trainable_indices if indices is None else _validate_landmark_indices(indices)
@@ -97,17 +104,21 @@ class LandmarkTypeTokenBank(nn.Module):
             )
         return torch.stack([self.tokens[index] for index in requested], dim=0)
 
+    # 学習対象のランドマークトークンパラメーターを返します。
     def trainable_token_parameters(self) -> tuple[nn.Parameter, ...]:
         return tuple(self.tokens[index] for index in self.trainable_indices)
 
+    # 固定された事前学習トークンパラメーターを返します。
     def frozen_token_parameters(self) -> tuple[nn.Parameter, ...]:
         selected = frozenset(self.trainable_indices)
         return tuple(token for index, token in enumerate(self.tokens) if index not in selected)
 
 
+# 画像と手ランドマークから指先深度を推定するニューラルネットワークです。
 class FingertipDepthStudent(nn.Module):
     """Fuse ViT image tokens and typed hand-landmark tokens for depth regression."""
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(
         self,
         config: StudentModelConfig,
@@ -135,8 +146,8 @@ class FingertipDepthStudent(nn.Module):
             )
         self.embedding_dim = embedding_dim
 
-        # Only image-plane x/y are model inputs. MediaPipe's relative z is
-        # deliberately excluded because it can act as a depth shortcut.
+        # モデル入力に使うのは画像平面上のX・Y座標です。MediaPipeの相対Zは
+        # 深度の近道となる情報が漏れる可能性があるため、意図的に除外します。
         self.landmark_coordinate_mlp = nn.Sequential(
             nn.Linear(2, embedding_dim),
             nn.GELU(),
@@ -177,6 +188,7 @@ class FingertipDepthStudent(nn.Module):
         )
         self._initialize_new_parameters(initial_depth_bias_m=float(initial_depth_bias_m))
 
+    # 事前学習重みのない新規ネットワーク層を初期化します。
     def _initialize_new_parameters(self, *, initial_depth_bias_m: float) -> None:
         modules = (
             self.landmark_coordinate_mlp,
@@ -204,6 +216,7 @@ class FingertipDepthStudent(nn.Module):
         nn.init.zeros_(final.weight)
         nn.init.constant_(final.bias, initial_depth_bias_m)
 
+    # 画像をViTで符号化し、画像特徴トークンを返します。
     def encode_images(self, images: torch.Tensor) -> torch.Tensor:
         if images.ndim != 4 or images.shape[1] != 3:
             raise ValueError("images must have shape [batch, 3, height, width]")
@@ -214,6 +227,7 @@ class FingertipDepthStudent(nn.Module):
             raise ValueError("image encoder token shape is incompatible with the fusion model")
         return features
 
+    # 画像トークンとランドマークトークンを統合して深度を回帰します。
     def forward_from_tokens(
         self,
         image_tokens: torch.Tensor,
@@ -245,6 +259,7 @@ class FingertipDepthStudent(nn.Module):
             raise AssertionError("depth head returned an unexpected shape")
         return depth_logits_m
 
+    # 入力をニューラルネットワークに通し、予測値を返します。
     def forward(
         self,
         images: torch.Tensor,
@@ -252,6 +267,7 @@ class FingertipDepthStudent(nn.Module):
     ) -> torch.Tensor:
         return self.forward_from_tokens(self.encode_images(images), landmark_coordinates)
 
+    # モデル全体の学習可能・固定パラメーター数を集計します。
     def parameter_counts(self) -> dict[str, int]:
         all_parameters = tuple(self.parameters())
         encoder_parameters = tuple(self.image_encoder.parameters())

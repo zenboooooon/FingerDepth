@@ -1,7 +1,7 @@
 [project]
 name = "monocular-fingertip-depth"
 version = "0.1.0"
-description = "Metric3D v2 + MediaPipe fingertip metric-depth PoC"
+description = "MediaPipe fingertip depth labels and Student training pipeline"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -18,7 +18,6 @@ dependencies = [
 ]
 
 [project.scripts]
-fingertip-depth = "fingertip_depth.cli:main"
 fingertip-train = "fingertip_depth.training_cli:main"
 
 [dependency-groups]

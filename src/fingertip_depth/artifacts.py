@@ -1,4 +1,4 @@
-"""Output serialization and visualization helpers."""
+'実験結果のJSON保存、深度画像の可視化、手指位置の注記など、出力ファイルを作る共通処理を担当します。'
 
 from __future__ import annotations
 
@@ -10,11 +10,13 @@ import cv2
 import numpy as np
 
 
+# 値を整形済みJSONとしてファイルに保存します。
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+# 深度値を可視化用に正規化し、BGRカラー画像として返します。
 def depth_preview_bgr(depth_m: np.ndarray) -> np.ndarray:
     valid = np.isfinite(depth_m) & (depth_m > 0)
     preview = np.zeros(depth_m.shape, dtype=np.uint8)
@@ -32,6 +34,7 @@ def depth_preview_bgr(depth_m: np.ndarray) -> np.ndarray:
     return colored
 
 
+# 画像に指先位置と推定結果を描画します。
 def annotate_fingertip(
     bgr: np.ndarray,
     *,

@@ -1,10 +1,4 @@
-"""Prepare immutable RGB and hand-landmark inputs for pseudo-label generation.
-
-This module deliberately stops before teacher inference.  It runs in the root
-project environment, where MediaPipe and the canonical OpenCV decoder are
-available, and writes a hash-audited interchange dataset that can be consumed
-from the isolated Depth Pro environment.
-"""
+'教師モデルの推論前に、動画からRGBフレームと手ランドマークを抽出します。内容のハッシュを記録し、再利用時に同一データか監査します。\n\nこの工程では教師推論を行いません。MediaPipeと標準デコーダーを使える環境で入力一式を作り、教師モデル用の隔離環境へ渡します。'
 
 from __future__ import annotations
 
@@ -29,7 +23,7 @@ from .constants import (
     HAND_LANDMARK_NAMES,
 )
 from .hands import HandLandmarker
-from .sample_experiment import focal_px_from_35mm_equivalent
+from .experiment_utils import focal_px_from_35mm_equivalent
 from .video_cache import (
     VideoFrameCache,
     pixel_hash_sequence_sha256,
@@ -44,6 +38,7 @@ _FULL_FRAME_DIAGONAL_MM = math.hypot(36.0, 24.0)
 FrameTransferMode = Literal["copy", "hardlink"]
 
 
+# 関係するPythonソースのSHA-256を集めて再現性を記録します。
 def _implementation_hashes() -> dict[str, str]:
     package_dir = Path(__file__).resolve().parent
     project_dir = package_dir.parents[1]
@@ -52,7 +47,7 @@ def _implementation_hashes() -> dict[str, str]:
         "hands.py": package_dir / "hands.py",
         "constants.py": package_dir / "constants.py",
         "camera.py": package_dir / "camera.py",
-        "sample_experiment.py": package_dir / "sample_experiment.py",
+        "experiment_utils.py": package_dir / "experiment_utils.py",
         "video_cache.py": package_dir / "video_cache.py",
         "prepare_pseudo_label_inputs.py": project_dir
         / "scripts"
@@ -63,6 +58,7 @@ def _implementation_hashes() -> dict[str, str]:
     return {name: sha256_file(path) for name, path in candidates.items() if path.is_file()}
 
 
+# 正の・浮動小数点数が仕様を満たすことを検証します。
 def _validate_positive_float(value: float, *, name: str) -> float:
     number = float(value)
     if not math.isfinite(number) or number <= 0:
@@ -70,6 +66,7 @@ def _validate_positive_float(value: float, *, name: str) -> float:
     return number
 
 
+# ランドマーク番号が範囲内で重複のない選択か検証します。
 def _validate_landmark_indices(indices: Sequence[int]) -> tuple[int, ...]:
     values = tuple(int(index) for index in indices)
     if not values:
@@ -82,6 +79,7 @@ def _validate_landmark_indices(indices: Sequence[int]) -> tuple[int, ...]:
     return values
 
 
+# SHA-256文字列を小文字の64桁16進数に正規化し、形式を検証します。
 def _validated_sha256(value: str, *, name: str) -> str:
     digest = value.strip().lower()
     if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
@@ -89,6 +87,7 @@ def _validated_sha256(value: str, *, name: str) -> str:
     return digest
 
 
+# 画像の縦横寸法に合わせてカメラ内部パラメーターを作成します。
 def _camera_for_shape(
     *,
     width: int,
@@ -107,6 +106,7 @@ def _camera_for_shape(
     )
 
 
+# ランドマーク観測をJSON記録用の辞書に変換します。
 def _landmark_dict(observation: Any) -> dict[str, Any]:
     if hasattr(observation, "as_dict"):
         value = observation.as_dict()
@@ -126,6 +126,7 @@ def _landmark_dict(observation: Any) -> dict[str, Any]:
     return dict(value)
 
 
+# 手の検出結果を疑似ラベル入力用の記録に直列化します。
 def _serialize_hand(hand: Any, selected: Sequence[Any]) -> dict[str, Any]:
     return {
         "hand_index": int(hand.hand_index),
@@ -137,6 +138,7 @@ def _serialize_hand(hand: Any, selected: Sequence[Any]) -> dict[str, Any]:
     }
 
 
+# 要求された番号のランドマークだけを選び、欠落を検証します。
 def _select_landmarks(
     hand: Any,
     feature_indices: tuple[int, ...],
@@ -150,6 +152,7 @@ def _select_landmarks(
     return [by_index[index] for index in feature_indices if index in by_index], by_index
 
 
+# 手検出から記録に必要な左右情報とランドマーク項目を組み立てます。
 def _build_hand_fields(
     hands: Sequence[Any],
     *,
@@ -196,12 +199,14 @@ def _build_hand_fields(
     }
 
 
+# RGB配列をPNGファイルに書き込みます。
 def _write_png(path: Path, bgr: np.ndarray) -> str:
     if not cv2.imwrite(str(path), bgr, [cv2.IMWRITE_PNG_COMPRESSION, 3]):
         raise OSError(f"failed to write lossless frame: {path}")
     return sha256_file(path)
 
 
+# 監査済みキャッシュのPNGを出力先へコピーして再利用します。
 def _copy_cached_png(
     *,
     source: Path,
@@ -216,6 +221,7 @@ def _copy_cached_png(
         raise ValueError(f"unsupported frame transfer mode: {mode}")
 
 
+# 保存済みフレームの寸法、画素ハッシュ、記録値を照合します。
 def _verify_stored_frame(
     *,
     path: Path,
@@ -240,6 +246,7 @@ def _verify_stored_frame(
     return observed_png_sha256
 
 
+# 一フレームの画像・時刻・手検出・監査情報を記録形式にまとめます。
 def _frame_record(
     *,
     frame_index: int,
@@ -264,10 +271,12 @@ def _frame_record(
     }
 
 
+# 一件の監査レコードをJSON Linesへ保存します。
 def _write_record(target: Any, record: dict[str, Any]) -> None:
     target.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+# 動画内フレームの時刻をミリ秒単位で計算します。
 def _video_timestamp_ms(
     *,
     capture: cv2.VideoCapture,
@@ -286,6 +295,7 @@ def _video_timestamp_ms(
     return candidate
 
 
+# デコーダー名、動画形式などフレーム生成条件を返します。
 def _video_decoder_metadata(capture: cv2.VideoCapture) -> dict[str, Any]:
     orientation_property = getattr(cv2, "CAP_PROP_ORIENTATION_AUTO", None)
     orientation_metadata_property = getattr(cv2, "CAP_PROP_ORIENTATION_META", None)
@@ -307,6 +317,7 @@ def _video_decoder_metadata(capture: cv2.VideoCapture) -> dict[str, Any]:
     }
 
 
+# 既存キャッシュのマニフェストと各フレームを照合し、監査に通った場合だけ再利用します。
 def _load_audited_cache(
     *,
     manifest_path: Path,
@@ -334,6 +345,7 @@ def _load_audited_cache(
     return cache, raw_manifest, source_path
 
 
+# フレーム番号に対応するキャッシュPNGのパスを返します。
 def _cached_png_path(cache: VideoFrameCache, index: int) -> Path:
     entry = cache.manifest["frames"][index]
     path = (cache.manifest_path.parent / entry["relative_path"]).resolve()
@@ -342,6 +354,7 @@ def _cached_png_path(cache: VideoFrameCache, index: int) -> Path:
     return path
 
 
+# 出力ディレクトリを作成し、書き込み可能な状態を確認します。
 def _ensure_output_directory(output_dir: Path) -> tuple[Path, Path]:
     if output_dir.exists() and any(output_dir.iterdir()):
         raise FileExistsError(f"prepared-input output directory is not empty: {output_dir}")
@@ -351,6 +364,7 @@ def _ensure_output_directory(output_dir: Path) -> tuple[Path, Path]:
     return frames_dir, output_dir / "frames.jsonl"
 
 
+# 動画を走査してRGBフレームと手ランドマークを監査付き入力データとして保存します。
 def prepare_pseudo_label_inputs(
     *,
     output_dir: Path,
@@ -395,6 +409,7 @@ def prepare_pseudo_label_inputs(
     fps: float
     source_provenance: dict[str, Any]
 
+    # 一フレームを前処理し、RGB画像・手ランドマーク・監査情報を記録します。
     def process_frame(
         *,
         detector: HandLandmarker,
@@ -642,6 +657,7 @@ def prepare_pseudo_label_inputs(
     return manifest
 
 
+# 準備済み入力データの各フレーム記録を順番に読み出します。
 def iter_prepared_records(manifest_path: Path) -> Iterable[dict[str, Any]]:
     """Yield records after validating a prepared-input manifest and JSONL hash."""
 

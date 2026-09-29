@@ -1,10 +1,4 @@
-"""Pinned adapters for the alternative metric-depth comparison models.
-
-The optional UniDepth and Depth Pro dependencies are imported only when their
-respective model is first loaded.  This keeps the baseline Metric3D
-environment usable and lets the two incompatible dependency groups be run in
-separate ``uv`` environments.
-"""
+'比較実験で使う UniDepth と Depth Pro の推論アダプターを提供します。任意依存ライブラリや重いモデルは必要になった時点で読み込みます。\n\nモデル取得や任意ライブラリの読み込みを比較処理から分離し、対応する依存環境でのみ推論器を初期化します。'
 
 from __future__ import annotations
 
@@ -44,6 +38,7 @@ _UNIDEPTH_CAMERA_MODES = frozenset({"approx_k", "no_camera"})
 _DEPTH_PRO_CAMERA_MODES = frozenset({"approx_focal", "estimated_focal"})
 
 
+# 深度推定値と、推論に使ったモデル・入力サイズなどの情報をまとめて保持します。
 @dataclass(frozen=True, slots=True)
 class AlternativeDepthPrediction:
     """One original-resolution metric-depth result."""
@@ -54,6 +49,7 @@ class AlternativeDepthPrediction:
     extras: dict[str, Any]
 
 
+# RGB画像が仕様を満たすことを検証します。
 def _validate_rgb(rgb: np.ndarray) -> tuple[int, int]:
     if not isinstance(rgb, np.ndarray):
         raise TypeError("RGB input must be a numpy array")
@@ -67,6 +63,7 @@ def _validate_rgb(rgb: np.ndarray) -> tuple[int, int]:
     return height, width
 
 
+# 指定条件と利用可能な演算装置から推論デバイスを選びます。
 def _resolve_device(device: str) -> torch.device:
     if device == "auto":
         return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -76,11 +73,13 @@ def _resolve_device(device: str) -> torch.device:
     return resolved
 
 
+# CUDAを使う場合はGPU処理の完了を待ち、推論時間を正しく計測できるようにします。
 def _synchronize(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 
 
+# 指定したファイルの内容からSHA-256を計算します。
 def sha256_file(path: Path) -> str:
     """Return the SHA-256 digest of a file without loading it all into memory."""
 
@@ -91,6 +90,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# チェックポイントの記録値と実データが一致するか照合します。
 def verify_checkpoint(path: Path, *, expected_sha256: str, model_name: str) -> str:
     """Verify one pinned model artifact before it can be deserialized."""
 
@@ -106,6 +106,7 @@ def verify_checkpoint(path: Path, *, expected_sha256: str, model_name: str) -> s
     return actual
 
 
+# Hugging Face Hubの取得関数を遅延インポートし、指定リビジョンのモデルファイルを取得します。
 def _hf_hub_download(**kwargs: Any) -> str:
     try:
         from huggingface_hub import hf_hub_download
@@ -117,6 +118,7 @@ def _hf_hub_download(**kwargs: Any) -> str:
     return hf_hub_download(**kwargs)
 
 
+# 指定リポジトリの固定チェックポイントを取得し、期待するSHA-256と一致するか検証します。
 def _ensure_hf_checkpoint(
     *,
     repository: str,
@@ -143,6 +145,7 @@ def _ensure_hf_checkpoint(
     return checkpoint
 
 
+# 固定したUniDepth v2チェックポイントを取得し、SHA-256を検証してパスを返します。
 def ensure_unidepth_checkpoint(
     *, downloader: Callable[..., str] | None = None
 ) -> Path:
@@ -158,6 +161,7 @@ def ensure_unidepth_checkpoint(
     )
 
 
+# 固定したDepth Proチェックポイントを取得し、SHA-256を検証してパスを返します。
 def ensure_depth_pro_checkpoint(
     *, downloader: Callable[..., str] | None = None
 ) -> Path:
@@ -173,6 +177,7 @@ def ensure_depth_pro_checkpoint(
     )
 
 
+# 深度出力をCPU上の有限なfloat32配列へ変換し、元画像と同じ寸法・非負値であることを検証します。
 def _as_original_depth(
     value: Any,
     *,
@@ -198,6 +203,7 @@ def _as_original_depth(
     return np.ascontiguousarray(depth_m, dtype=np.float32)
 
 
+# 焦点距離と主点から3×3のカメラ内部パラメーター行列を作り、指定デバイスのTensorにします。
 def _intrinsics_tensor(intrinsics: CameraIntrinsics, device: torch.device) -> torch.Tensor:
     return torch.tensor(
         [
@@ -210,6 +216,7 @@ def _intrinsics_tensor(intrinsics: CameraIntrinsics, device: torch.device) -> to
     )
 
 
+# UniDepthの出力行列から焦点距離と主点を読み取り、辞書形式で返します。
 def _intrinsics_from_output(value: Any) -> dict[str, float] | None:
     if value is None:
         return None
@@ -227,9 +234,11 @@ def _intrinsics_from_output(value: Any) -> dict[str, float] | None:
     }
 
 
+# UniDepth v2モデルを遅延ロードし、画像からメートル単位の深度を推定します。
 class UniDepthV2L:
     """Pinned UniDepth V2-L adapter for K-supplied and camera-free inference."""
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(
         self,
         *,
@@ -242,6 +251,7 @@ class UniDepthV2L:
         self._model = model
         self._load_details: dict[str, Any] = {}
 
+    # モデル名・版・実行条件など推論モデルの情報を返します。
     @property
     def metadata(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {
@@ -261,10 +271,12 @@ class UniDepthV2L:
         metadata.update(self._load_details)
         return metadata
 
+    # モデル名・版・実行条件など推論モデルの情報を返します。
     @property
     def model_metadata(self) -> dict[str, Any]:
         return self.metadata
 
+    # 固定チェックポイントを使ってUniDepth v2モデルを構築し、指定デバイスへ配置します。
     def _load_model(self) -> Any:
         if self._checkpoint_path is None:
             checkpoint = ensure_unidepth_checkpoint()
@@ -308,12 +320,14 @@ class UniDepthV2L:
             )
         return model.to(self.device).eval()
 
+    # 必要時にモデル本体を読み込み、再利用できる形で返します。
     @property
     def model(self) -> Any:
         if self._model is None:
             self._model = self._load_model()
         return self._model
 
+    # 入力からモデルの深度予測を計算し、値と推論情報を返します。
     def predict(
         self,
         rgb: np.ndarray,
@@ -373,9 +387,11 @@ class UniDepthV2L:
         )
 
 
+# Depth Proモデルを遅延ロードし、画像から深度を推定する比較用アダプターです。
 class DepthProEstimator:
     """Pinned Depth Pro adapter for supplied-focal and inferred-focal inference."""
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(
         self,
         *,
@@ -393,6 +409,7 @@ class DepthProEstimator:
         self._precision = torch.float16 if self.device.type == "cuda" else torch.float32
         self._load_details: dict[str, Any] = {}
 
+    # モデル名・版・実行条件など推論モデルの情報を返します。
     @property
     def metadata(self) -> dict[str, Any]:
         metadata: dict[str, Any] = {
@@ -412,10 +429,12 @@ class DepthProEstimator:
         metadata.update(self._load_details)
         return metadata
 
+    # モデル名・版・実行条件など推論モデルの情報を返します。
     @property
     def model_metadata(self) -> dict[str, Any]:
         return self.metadata
 
+    # Depth Proのモデルと、入力画像をモデル用Tensorへ変換する前処理器を読み込みます。
     def _load_model_and_transform(self) -> tuple[Any, Callable[[np.ndarray], torch.Tensor]]:
         if self._checkpoint_path is None:
             checkpoint = ensure_depth_pro_checkpoint()
@@ -446,11 +465,13 @@ class DepthProEstimator:
         self._load_details = {"checkpoint_path": str(checkpoint)}
         return model.eval(), transform
 
+    # Depth Proのモデルと前処理器を、未ロードの場合だけ初期化します。
     def _ensure_loaded(self) -> tuple[Any, Callable[[np.ndarray], torch.Tensor]]:
         if self._model is None or self._transform is None:
             self._model, self._transform = self._load_model_and_transform()
         return self._model, self._transform
 
+    # 入力からモデルの深度予測を計算し、値と推論情報を返します。
     def predict(
         self,
         rgb: np.ndarray,

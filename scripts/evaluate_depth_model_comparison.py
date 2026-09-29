@@ -114,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--baseline-frames",
         type=Path,
         default=Path("outputs/iphone_phase1_2/phase2_finger_movement/frames.jsonl"),
-        help="Metric3D run whose MediaPipe fingertip coordinates are reused for Phase 2.",
+        help="Previously prepared MediaPipe coordinates; this input does not run a depth model.",
     )
     parser.add_argument(
         "--baseline-records-sha256",
@@ -171,8 +171,8 @@ def _validate_inputs(args: argparse.Namespace) -> tuple[list[tuple[Path, float]]
             raise FileNotFoundError(f"missing movement video: {video_path}")
         if not args.baseline_frames.is_file():
             raise FileNotFoundError(
-                "missing baseline MediaPipe frame records: "
-                f"{args.baseline_frames}; run evaluate_iphone_samples.py Phase 2 first"
+                "missing prepared MediaPipe frame-coordinate records: "
+                f"{args.baseline_frames}; provide an existing audited baseline JSONL"
             )
         if not args.frame_cache_manifest.is_file():
             raise FileNotFoundError(
@@ -274,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             "max_video_frames": args.max_video_frames,
             "device_request": args.device,
             "phase2_coordinate_policy": (
-                "reuse fixed MediaPipe fingertip coordinates from the Metric3D baseline"
+                "reuse the supplied fixed MediaPipe fingertip coordinate records"
             ),
         },
     }

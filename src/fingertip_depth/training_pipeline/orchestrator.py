@@ -1,30 +1,4 @@
-"""Immutable, resumable orchestration for video-to-student training.
-
-The orchestrator deliberately owns only control flow.  Frame/landmark
-preparation, student-dataset construction, and training reuse the existing
-Python APIs.  Depth Pro remains the sole subprocess boundary because its
-NumPy/OpenCV requirements conflict with the root project.
-
-The minimal duck-typed contract shared with ``config`` and ``discovery`` is:
-
-* ``PipelineConfig`` exposes ``project_root``, ``output``, ``prepare``,
-  ``teacher``, ``dataset``, and ``training``.
-* ``output`` exposes ``processed_dir``, ``dataset_dir``, and ``runs_dir``.
-* ``prepare`` exposes ``hand_model_path``, ``landmark_indices``,
-  ``frame_transfer_mode``, and ``max_frames``.
-* ``teacher`` exposes ``depth_pro_project``, ``device``,
-  ``frame_transfer_mode``, ``max_frames``, and ``teacher_selection_report``.
-* ``dataset`` exposes ``frame_transfer_mode`` and
-  ``validation_tail_fraction``.
-* ``training`` exposes ``device`` plus ``model_config()``,
-  ``training_config()``, and ``spike_filter_config()``.
-* ``DiscoveredVideo`` exposes ``path``, ``relative_path``, ``split``,
-  ``sequence_id``, ``source_sha256``, ``size_bytes``, and
-  ``focal_35mm_mm``.
-
-``discover_videos(config)`` is imported lazily so tests and other callers can
-inject already-discovered videos without coupling to filesystem discovery.
-"""
+'前処理、教師推論、データセット作成、学習をキャッシュ付きで順番に実行します。成果物を検証し、中断後の再開や不完全な作業領域の復旧も管理します。'
 
 from __future__ import annotations
 
@@ -76,6 +50,7 @@ _SEQUENCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+# パイプライン出力設定が提供する保存先属性の契約です。
 @runtime_checkable
 class OutputConfigProtocol(Protocol):
     processed_dir: Path
@@ -83,6 +58,7 @@ class OutputConfigProtocol(Protocol):
     runs_dir: Path
 
 
+# フレーム前処理設定が提供するモデル・対象ランドマーク条件の契約です。
 @runtime_checkable
 class PrepareConfigProtocol(Protocol):
     hand_model_path: Path
@@ -91,6 +67,7 @@ class PrepareConfigProtocol(Protocol):
     max_frames: int | None
 
 
+# 教師推論設定が提供するモデルと実行条件の契約です。
 @runtime_checkable
 class TeacherConfigProtocol(Protocol):
     depth_pro_project: Path
@@ -101,12 +78,14 @@ class TeacherConfigProtocol(Protocol):
     teacher_selection_report: Path | None
 
 
+# データセット構築設定が提供する分割・変換条件の契約です。
 @runtime_checkable
 class DatasetConfigProtocol(Protocol):
     frame_transfer_mode: str
     validation_tail_fraction: float | None
 
 
+# 学習設定からモデル・学習・外れ値除外設定を得る契約です。
 @runtime_checkable
 class TrainingConfigProtocol(Protocol):
     device: str
@@ -114,13 +93,17 @@ class TrainingConfigProtocol(Protocol):
     optimizer: object
     spike_filter: object
 
+    # 設定値からStudentModelConfigを作成して返します。
     def model_config(self) -> object: ...
 
+    # 設定値からStudentTrainingConfigを作成して返します。
     def training_config(self) -> object: ...
 
+    # 設定値からTeacherSpikeFilterConfigを作成して返します。
     def spike_filter_config(self) -> object: ...
 
 
+# 各工程の設定とプロジェクト基準パスを提供する契約です。
 @runtime_checkable
 class PipelineConfigProtocol(Protocol):
     project_root: Path
@@ -131,6 +114,7 @@ class PipelineConfigProtocol(Protocol):
     training: TrainingConfigProtocol
 
 
+# 発見済み動画のパス・分割・識別情報を提供する契約です。
 @runtime_checkable
 class DiscoveredVideoProtocol(Protocol):
     path: Path
@@ -142,6 +126,7 @@ class DiscoveredVideoProtocol(Protocol):
     focal_35mm_mm: float
 
 
+# パイプライン工程または成果物の検証が失敗したことを表します。
 class PipelineError(RuntimeError):
     """Raised when an immutable input or generated artifact cannot be trusted."""
 
@@ -149,12 +134,14 @@ class PipelineError(RuntimeError):
 CommandRunner = Callable[..., object]
 
 
+# 設定に従って動画探索を行う既定の依存処理です。
 def _default_discover(config: PipelineConfigProtocol) -> Sequence[DiscoveredVideoProtocol]:
     from fingertip_depth.training_pipeline.discovery import discover_videos
 
     return discover_videos(config)  # type: ignore[arg-type, no-any-return]
 
 
+# 外部コマンドを実行する既定の依存処理です。
 def _default_command_runner(
     command: Sequence[str], *, cwd: Path
 ) -> subprocess.CompletedProcess[str]:
@@ -167,6 +154,7 @@ def _default_command_runner(
     )
 
 
+# 各工程の実装を受け取り、パイプラインから呼び出せるようにまとめます。
 @dataclass(frozen=True)
 class PipelineDependencies:
     """Injectable boundaries used by unit tests and alternate front-ends."""
@@ -183,6 +171,7 @@ class PipelineDependencies:
     migration_checkpoint: Callable[[str], None] = lambda _phase: None
 
 
+# 動画キャッシュを再利用できるか、作り直す必要があるかを表します。
 @dataclass(frozen=True)
 class VideoCacheStatus:
     sequence_id: str
@@ -197,6 +186,7 @@ class VideoCacheStatus:
     teacher_manifest: Path | None = None
     teacher_manifest_sha256: str | None = None
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, object]:
         return {
             "sequence_id": self.sequence_id,
@@ -217,6 +207,7 @@ class VideoCacheStatus:
         }
 
 
+# 工程結果、キャッシュ状況、警告、成果物をまとめます。
 @dataclass(frozen=True)
 class PipelineSummary:
     operation: str
@@ -237,18 +228,22 @@ class PipelineSummary:
     actions: tuple[str, ...]
     warnings: tuple[str, ...] = ()
 
+    # パイプライン対象として検証済みの動画総数を返します。
     @property
     def videos_total(self) -> int:
         return len(self.videos)
 
+    # 既存キャッシュを再利用する動画の件数を返します。
     @property
     def video_cache_hits(self) -> int:
         return sum(item.cache_hit for item in self.videos)
 
+    # 新規作成または再構築が必要な動画キャッシュの件数を返します。
     @property
     def video_cache_misses(self) -> int:
         return self.videos_total - self.video_cache_hits
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, object]:
         return {
             "operation": self.operation,
@@ -278,12 +273,14 @@ class PipelineSummary:
         }
 
 
+# 成果物の相対パスと、その内容を識別する情報を保持します。
 @dataclass(frozen=True)
 class _Artifact:
     path: Path
     sha256: str
 
 
+# 入れ子のPath・NumPy値などをJSON保存可能な値に変換します。
 def _jsonable(value: object) -> object:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return _jsonable(dataclasses.asdict(value))
@@ -305,6 +302,7 @@ def _jsonable(value: object) -> object:
     return repr(value)
 
 
+# 入力設定と内容ハッシュからキャッシュ識別キーを作ります。
 def _content_key(payload: object) -> str:
     encoded = json.dumps(
         _jsonable(payload),
@@ -315,6 +313,7 @@ def _content_key(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# JSONファイルを読み込みます。
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -325,6 +324,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+# 形式番号がこのプログラムで扱える版か確認します。
 def _require_manifest_format(
     manifest: Mapping[str, object],
     *,
@@ -342,6 +342,7 @@ def _require_manifest_format(
         raise PipelineError(f"unexpected manifest format or version: {artifact}")
 
 
+# JSONを書き込みます。
 def _write_json(path: Path, value: Mapping[str, object]) -> None:
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -349,6 +350,7 @@ def _write_json(path: Path, value: Mapping[str, object]) -> None:
     )
 
 
+# 値が正しい形式のSHA-256であることを検証します。
 def _require_sha256(value: object, *, field: str) -> str:
     digest = str(value)
     if not _SHA256.fullmatch(digest):
@@ -356,6 +358,7 @@ def _require_sha256(value: object, *, field: str) -> str:
     return digest
 
 
+# ファイルの内容から環境に依存しないSHA-256を計算します。
 def _stable_file_hash(
     path: Path,
     hash_file: Callable[[Path], str],
@@ -387,6 +390,7 @@ def _stable_file_hash(
     return digest
 
 
+# 成果物パスがプロジェクト内にあることを確認し相対表記にします。
 def _relative_artifact(root: Path, value: object) -> Path:
     relative = Path(str(value))
     if relative.is_absolute():
@@ -398,6 +402,7 @@ def _relative_artifact(root: Path, value: object) -> Path:
     return path
 
 
+# マニフェストに記録された成果物のパスとハッシュを検証します。
 def _validate_declared_artifact(
     root: Path,
     descriptor: object,
@@ -434,6 +439,7 @@ def _validate_declared_artifact(
     return _Artifact(path=path, sha256=observed)
 
 
+# マニフェスト内の成果物一覧と実ファイルの存在・内容を照合します。
 def _validate_manifest_artifacts(
     manifest_path: Path,
     manifest: Mapping[str, object],
@@ -458,8 +464,8 @@ def _validate_manifest_artifacts(
                 raise PipelineError(
                     f"required artifact {name!r} descriptor is invalid: {manifest_path}"
                 )
-            # Student-dataset manifests store aggregate digests and their
-            # encoding beside physical-file descriptors in this object.
+            # 生徒データセットのマニフェストでは、集約ダイジェストとその
+            # 符号化方式を実ファイル情報と並べてこの項目に保存します。
             continue
         validated[name] = _validate_declared_artifact(
             manifest_path.parent,
@@ -470,6 +476,7 @@ def _validate_manifest_artifacts(
     return validated
 
 
+# JSON Linesの各行を解析し、オブジェクトを順に返します。
 def _iter_jsonl_objects(path: Path, *, field: str) -> Iterator[Mapping[str, object]]:
     try:
         with path.open(encoding="utf-8") as source:
@@ -487,6 +494,7 @@ def _iter_jsonl_objects(path: Path, *, field: str) -> Iterator[Mapping[str, obje
         raise PipelineError(f"cannot read {field} {path}: {error}") from error
 
 
+# 標本が参照する画像ファイルの存在・寸法・ハッシュを検証します。
 def _validate_sample_images(
     manifest_path: Path,
     samples: _Artifact,
@@ -512,6 +520,7 @@ def _validate_sample_images(
         )
 
 
+# 前処理マニフェストと準備済みフレーム一式を検証します。
 def _validate_prepared_artifacts(
     manifest_path: Path,
     manifest: Mapping[str, object],
@@ -585,6 +594,7 @@ def _validate_prepared_artifacts(
         )
 
 
+# 教師マニフェストと疑似ラベル一式を検証します。
 def _validate_teacher_artifacts(
     manifest_path: Path,
     manifest: Mapping[str, object],
@@ -613,6 +623,7 @@ def _validate_teacher_artifacts(
     )
 
 
+# 統合データセットのマニフェスト、CSV、画像参照を検証します。
 def _validate_dataset_artifacts(
     manifest_path: Path,
     manifest: Mapping[str, object],
@@ -638,6 +649,7 @@ def _validate_dataset_artifacts(
     )
 
 
+# 学習runのチェックポイント、評価記録、マニフェストを検証します。
 def _validate_run_artifacts(
     manifest_path: Path,
     manifest: Mapping[str, object],
@@ -662,6 +674,7 @@ def _validate_run_artifacts(
     )
 
 
+# キャッシュ内ファイルの相対パスとSHA-256の一覧を作成します。
 def _cache_file_inventory(root: Path) -> dict[str, Path]:
     resolved_root = root.resolve()
     inventory: dict[str, Path] = {}
@@ -682,6 +695,7 @@ def _cache_file_inventory(root: Path) -> dict[str, Path]:
     return inventory
 
 
+# 完了マーカーとファイル一覧を検証し、キャッシュを再利用できるか判定します。
 def _inspect_complete(
     root: Path,
     *,
@@ -766,6 +780,7 @@ def _inspect_complete(
     return artifacts
 
 
+# 成果物一覧とハッシュを記録した完了マーカーを保存します。
 def _write_complete(
     root: Path,
     *,
@@ -807,6 +822,7 @@ def _write_complete(
     )
 
 
+# 成果物を安全に構築するための新しい一時ディレクトリを作成します。
 def _new_staging_dir(final_dir: Path, dependencies: PipelineDependencies) -> Path:
     final_dir.parent.mkdir(parents=True, exist_ok=True)
     nonce = re.sub(r"[^A-Za-z0-9]", "", dependencies.nonce_factory())[:24] or "stage"
@@ -818,6 +834,7 @@ def _new_staging_dir(final_dir: Path, dependencies: PipelineDependencies) -> Pat
     return staging
 
 
+# 完成した一時ディレクトリを正式なキャッシュ位置へ切り替えます。
 def _publish_staging(staging: Path, final_dir: Path) -> None:
     if final_dir.exists():
         raise PipelineError(f"refusing to replace immutable cache directory: {final_dir}")
@@ -827,15 +844,18 @@ def _publish_staging(staging: Path, final_dir: Path) -> None:
         raise PipelineError(f"failed to publish {staging} as {final_dir}: {error}") from error
 
 
+# 失敗後に残った一時作業ディレクトリを削除します。
 def _cleanup_staging(staging: Path) -> None:
     if staging.is_dir() and staging.name.startswith(".") and ".staging-" in staging.name:
         shutil.rmtree(staging, ignore_errors=True)
 
 
+# 動画IDから専用作業ディレクトリのパスを作ります。
 def _video_workspace_path(final_dir: Path) -> Path:
     return final_dir.parent / f".{final_dir.name}{VIDEO_WORKSPACE_SUFFIX}"
 
 
+# ファイル作成・置換を含むディレクトリ更新をストレージへ同期します。
 def _fsync_directory(path: Path) -> None:
     directory_fd = os.open(
         path,
@@ -847,6 +867,7 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+# 動画作業領域の所有者・入力・形式を記録するデータを作ります。
 def _video_workspace_payload(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -881,6 +902,7 @@ def _video_workspace_payload(
     }
 
 
+# 動画作業領域の識別・検証用マーカーを書き込みます。
 def _write_video_workspace_marker(
     workspace: Path,
     config: PipelineConfigProtocol,
@@ -902,6 +924,7 @@ def _write_video_workspace_marker(
     _fsync_directory(workspace)
 
 
+# 作業領域マーカーの動画ID・入力ハッシュ・形式を検証します。
 def _validate_video_workspace_marker(
     workspace: Path,
     config: PipelineConfigProtocol,
@@ -918,6 +941,7 @@ def _validate_video_workspace_marker(
         raise PipelineError(f"video workspace identity mismatch: {workspace}")
 
 
+# 所有者を確認できない旧形式の作業領域を隔離します。
 def _quarantine_legacy_workspace(
     candidate: Path,
     dependencies: PipelineDependencies,
@@ -934,6 +958,7 @@ def _quarantine_legacy_workspace(
     dependencies.migration_checkpoint("legacy-quarantined")
 
 
+# 前処理の実装ファイルのSHA-256を集め、キャッシュ識別に使います。
 def _preparation_implementation_hashes(
     project_root: Path,
     dependencies: PipelineDependencies,
@@ -944,7 +969,7 @@ def _preparation_implementation_hashes(
         "hands.py": package_dir / "hands.py",
         "constants.py": package_dir / "constants.py",
         "camera.py": package_dir / "camera.py",
-        "sample_experiment.py": package_dir / "sample_experiment.py",
+        "experiment_utils.py": package_dir / "experiment_utils.py",
         "video_cache.py": package_dir / "video_cache.py",
         "prepare_pseudo_label_inputs.py": project_root
         / "scripts"
@@ -967,6 +992,7 @@ def _preparation_implementation_hashes(
     }
 
 
+# 動画作業領域の前処理済みフレームとメタデータを検証します。
 def _validate_workspace_prepared(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -1038,6 +1064,7 @@ def _validate_workspace_prepared(
     )
 
 
+# 復旧対象となり得る旧形式の一時ディレクトリを列挙します。
 def _legacy_staging_candidates(parent: Path) -> list[Path]:
     return sorted(
         (
@@ -1052,6 +1079,7 @@ def _legacy_staging_candidates(parent: Path) -> list[Path]:
     )
 
 
+# 旧形式の教師出力を検査し、再開可能な作業状態を復元します。
 def _recover_legacy_teacher(
     workspace: Path,
     candidates: Sequence[Path],
@@ -1138,6 +1166,7 @@ def _recover_legacy_teacher(
     dependencies.migration_checkpoint("teacher-moved")
 
 
+# ロックを取得して動画作業領域を確保し、競合する処理を防ぎます。
 def _acquire_video_workspace(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -1221,6 +1250,7 @@ def _acquire_video_workspace(
     return workspace
 
 
+# 入力動画のサイズとSHA-256が探索時の記録と一致するか検証します。
 def _verify_source_video(
     video: DiscoveredVideoProtocol,
     dependencies: PipelineDependencies,
@@ -1261,6 +1291,7 @@ def _verify_source_video(
         )
 
 
+# 動画一覧の一意性、パス、ハッシュを検証して返します。
 def _validated_videos(
     config: PipelineConfigProtocol,
     videos: Sequence[DiscoveredVideoProtocol] | None,
@@ -1295,6 +1326,7 @@ def _validated_videos(
     return tuple(validated)
 
 
+# 複数のソースハッシュをまとめ、実装の識別値を作ります。
 def _implementation_fingerprint(
     project_root: Path,
     project_paths: Sequence[str],
@@ -1335,6 +1367,7 @@ def _implementation_fingerprint(
     )
 
 
+# 動画と前処理条件から動画キャッシュの識別キーを作ります。
 def _video_cache_key(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -1372,8 +1405,8 @@ def _video_cache_key(
             "frame_transfer_mode": config.teacher.frame_transfer_mode,
             "max_frames": config.teacher.max_frames,
             "checkpoint_interval_frames": config.teacher.checkpoint_interval_frames,
-            # Selection evidence is intentionally not inherited by newly
-            # discovered videos; the configured path is excluded and unused.
+            # 以前の動画で得た選択根拠を新しい動画に引き継ぐと、
+            # 根拠を誤って流用するため、探索した動画では設定パスを参照・使用しません。
             "selection_report": None,
             "depth_pro_pyproject_sha256": dependencies.hash_file(depth_pyproject),
             "depth_pro_lock_sha256": dependencies.hash_file(depth_lock),
@@ -1392,6 +1425,7 @@ def _video_cache_key(
     return _content_key(payload)
 
 
+# 入力系列と統合条件からデータセットキャッシュの識別キーを作ります。
 def _dataset_cache_key(
     config: PipelineConfigProtocol,
     video_statuses: Sequence[VideoCacheStatus],
@@ -1425,6 +1459,7 @@ def _dataset_cache_key(
     )
 
 
+# データセット・モデル・学習条件から学習runの識別キーを作ります。
 def _run_cache_key(
     config: PipelineConfigProtocol,
     dataset_key: str,
@@ -1452,6 +1487,7 @@ def _run_cache_key(
     )
 
 
+# 動画キャッシュが入力動画と前処理実装に一致するか検査します。
 def _inspect_video_cache(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -1532,6 +1568,7 @@ def _inspect_video_cache(
     )
 
 
+# 隔離環境の教師推論コマンドを起動し、終了結果を確認します。
 def _invoke_teacher(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -1571,8 +1608,8 @@ def _invoke_teacher(
         command.append("--resume")
     if config.teacher.max_frames is not None:
         command.extend(("--max-frames", str(config.teacher.max_frames)))
-    # teacher_selection_report is intentionally never forwarded.  Evidence
-    # scoped to an older video must not be relabelled as evidence for a new one.
+    # teacher_selection_reportはここから転送しません。
+    # 過去の動画に対する根拠を、新しい動画の根拠として扱わないためです。
     try:
         result = dependencies.command_runner(command, cwd=Path(config.project_root))
     except (OSError, subprocess.SubprocessError) as error:
@@ -1584,6 +1621,7 @@ def _invoke_teacher(
         raise PipelineError(f"Depth Pro subprocess failed with exit code {returncode}{detail}")
 
 
+# 処理完了後に不要となった作業領域スナップショットを削除します。
 def _remove_workspace_snapshot(path: Path) -> None:
     if path.is_symlink():
         raise PipelineError(f"video workspace snapshot must not be a symbolic link: {path}")
@@ -1593,6 +1631,7 @@ def _remove_workspace_snapshot(path: Path) -> None:
         path.unlink()
 
 
+# 準備済みキャッシュを検証し、無効ならフレーム前処理を再実行します。
 def _ensure_workspace_prepared(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -1705,6 +1744,7 @@ def _ensure_workspace_prepared(
     return prepared_manifest, prepared, prepared_sha256
 
 
+# 作業領域内の教師選択情報と生成済みラベルを検証します。
 def _validate_workspace_teacher(
     video: DiscoveredVideoProtocol,
     teacher_manifest: Path,
@@ -1738,6 +1778,7 @@ def _validate_workspace_teacher(
     return teacher
 
 
+# 教師出力と進捗記録から再開位置・完了状態を判定します。
 def _teacher_workspace_resume_state(teacher_dir: Path) -> bool:
     if not teacher_dir.exists():
         return False
@@ -1767,6 +1808,7 @@ def _teacher_workspace_resume_state(teacher_dir: Path) -> bool:
     return True
 
 
+# 動画を可逆フレームへデコードして監査付きキャッシュを構築します。
 def _build_video_cache(
     config: PipelineConfigProtocol,
     video: DiscoveredVideoProtocol,
@@ -1845,6 +1887,7 @@ def _build_video_cache(
     return _inspect_video_cache(config, video, status.cache_key, dependencies)
 
 
+# 統合データセットが現在の入力系列・設定に一致するか検査します。
 def _inspect_dataset_cache(
     dataset_dir: Path,
     dataset_key: str,
@@ -1874,6 +1917,7 @@ def _inspect_dataset_cache(
     return artifacts["dataset_manifest"]
 
 
+# 前処理済み系列と教師ラベルから統合データセットを構築します。
 def _build_dataset_cache(
     config: PipelineConfigProtocol,
     statuses: Sequence[VideoCacheStatus],
@@ -1943,6 +1987,7 @@ def _build_dataset_cache(
     return artifact
 
 
+# 学習runが現在の設定で正常完了しており再利用できるか検査します。
 def _inspect_run_cache(
     run_dir: Path,
     run_key: str,
@@ -1979,6 +2024,7 @@ def _inspect_run_cache(
     return artifacts["run_manifest"]
 
 
+# 生徒モデルの学習を実行し、チェックポイントと評価結果を保存します。
 def _build_run(
     config: PipelineConfigProtocol,
     *,
@@ -2056,6 +2102,7 @@ def _build_run(
     return artifact
 
 
+# 入力やキャッシュの状態からユーザーに伝える警告を集めます。
 def _warnings(config: PipelineConfigProtocol) -> tuple[str, ...]:
     warnings: list[str] = []
     if config.teacher.teacher_selection_report is not None:
@@ -2071,6 +2118,7 @@ def _warnings(config: PipelineConfigProtocol) -> tuple[str, ...]:
     return tuple(warnings)
 
 
+# 実行せずに、キャッシュ状態に応じて今後必要な工程を列挙します。
 def _planned_actions(
     statuses: Sequence[VideoCacheStatus],
     *,
@@ -2092,6 +2140,7 @@ def _planned_actions(
     return tuple(actions)
 
 
+# 全動画の前処理・教師推論・統合・学習をキャッシュ管理付きで実行します。
 def _orchestrate(
     config: PipelineConfigProtocol,
     videos: Sequence[DiscoveredVideoProtocol] | None,
@@ -2229,6 +2278,7 @@ def _orchestrate(
     )
 
 
+# 設定に従ってパイプラインを実行し、工程の要約を返します。
 def run_pipeline(
     config: PipelineConfigProtocol,
     videos: Sequence[DiscoveredVideoProtocol] | None = None,
@@ -2249,6 +2299,7 @@ def run_pipeline(
     )
 
 
+# 処理を開始せず、キャッシュ状況と次に必要な工程を返します。
 def pipeline_status(
     config: PipelineConfigProtocol,
     videos: Sequence[DiscoveredVideoProtocol] | None = None,

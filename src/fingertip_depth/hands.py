@@ -1,4 +1,4 @@
-"""MediaPipe hand landmarks with a backward-compatible landmark-8 view."""
+'MediaPipeで動画・画像の手のランドマークを検出し、親指先端などの観測値と動画時刻を提供します。'
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ _HAND_LANDMARK_INDEX_BY_NAME = {
 }
 
 
+# ランドマーク指定を解析し、選択する手指番号の列へ変換します。
 def parse_hand_landmark_selection(value: str) -> tuple[int, ...]:
     """Parse ordered comma-separated MediaPipe landmark names or indices.
 
@@ -62,6 +63,7 @@ def parse_hand_landmark_selection(value: str) -> tuple[int, ...]:
     return tuple(indices)
 
 
+# 一回の検出で得た指先の位置、深度、信頼度などを保持します。
 @dataclass(frozen=True, slots=True)
 class FingertipDetection:
     hand_index: int
@@ -74,10 +76,12 @@ class FingertipDetection:
     handedness: str | None
     handedness_score: float | None
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
+# 一つの手ランドマークについて、位置や検出信頼度を保持します。
 @dataclass(frozen=True, slots=True)
 class LandmarkObservation:
     """One MediaPipe landmark in normalized and original-image coordinates.
@@ -97,10 +101,12 @@ class LandmarkObservation:
     v_px: int | None
     in_frame: bool
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
+# 一つの手のランドマーク群と、左右の判定結果をまとめて保持します。
 @dataclass(frozen=True, slots=True)
 class HandDetection:
     """All available MediaPipe landmarks for one detected hand."""
@@ -110,6 +116,7 @@ class HandDetection:
     handedness_score: float | None
     landmarks: tuple[LandmarkObservation, ...]
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, object]:
         return {
             "hand_index": self.hand_index,
@@ -118,6 +125,7 @@ class HandDetection:
             "landmarks": [landmark.as_dict() for landmark in self.landmarks],
         }
 
+    # 番号で指定されたランドマーク観測値を返します。
     def landmark(self, index: int) -> LandmarkObservation | None:
         """Return one indexed observation, or ``None`` when it was unavailable."""
 
@@ -127,9 +135,11 @@ class HandDetection:
         )
 
 
+# MediaPipeの検出器を管理し、画像や動画フレームから手ランドマークを取得します。
 class HandLandmarker:
     """Synchronous IMAGE/VIDEO MediaPipe Tasks wrapper."""
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(
         self,
         *,
@@ -170,15 +180,19 @@ class HandLandmarker:
         )
         self._landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
 
+    # with文に入るときにリソースを準備してインスタンスを返します。
     def __enter__(self) -> Self:
         return self
 
+    # with文を抜けるときに開いているリソースを解放します。
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    # MediaPipeなど保持中の処理器を閉じてリソースを解放します。
     def close(self) -> None:
         self._landmarker.close()
 
+    # 一枚の画像から手ランドマークを検出します。
     def detect(
         self,
         rgb: np.ndarray,
@@ -190,6 +204,7 @@ class HandLandmarker:
         result, width, height = self._run_detection(rgb, timestamp_ms=timestamp_ms)
         return self._extract(result, width=width, height=height)
 
+    # 動画フレームから時刻付きの手検出結果を返します。
     def detect_hands(
         self,
         rgb: np.ndarray,
@@ -201,6 +216,7 @@ class HandLandmarker:
         result, width, height = self._run_detection(rgb, timestamp_ms=timestamp_ms)
         return self._extract_hands(result, width=width, height=height)
 
+    # MediaPipe検出器を実行し、フレーム番号と時刻を管理します。
     def _run_detection(
         self,
         rgb: np.ndarray,
@@ -231,6 +247,7 @@ class HandLandmarker:
 
         return result, width, height
 
+    # 動画入力で次に使う単調増加のタイムスタンプを返します。
     @staticmethod
     def next_video_timestamp_ms(
         frame_index: int,
@@ -246,6 +263,7 @@ class HandLandmarker:
             return previous_timestamp_ms + 1
         return candidate
 
+    # MediaPipe結果をアプリ内の手検出データ構造へ変換します。
     @staticmethod
     def _extract(result: Any, *, width: int, height: int) -> list[FingertipDetection]:
         detections: list[FingertipDetection] = []
@@ -280,6 +298,7 @@ class HandLandmarker:
             )
         return detections
 
+    # 各手のランドマークと左右分類を検出結果から組み立てます。
     @staticmethod
     def _extract_hands(result: Any, *, width: int, height: int) -> list[HandDetection]:
         detections: list[HandDetection] = []
@@ -326,6 +345,7 @@ class HandLandmarker:
             )
         return detections
 
+    # 分類結果から左手・右手のラベルと確信度を取り出します。
     @staticmethod
     def _handedness(result: Any, hand_index: int) -> tuple[str | None, float | None]:
         if hand_index >= len(result.handedness) or not result.handedness[hand_index]:

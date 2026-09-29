@@ -1,4 +1,4 @@
-"""Metric3D v2 and MediaPipe fingertip depth pipeline."""
+'手指の深度推定と学習処理をまとめるパッケージです。外部から使う主要機能をここから参照できるようにします。'
 
 from .camera import CameraIntrinsics
 from .constants import FINGERTIP_LANDMARK_INDEX

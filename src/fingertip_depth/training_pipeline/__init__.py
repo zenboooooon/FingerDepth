@@ -1,4 +1,4 @@
-"""Public API for the reproducible video-to-student training pipeline."""
+'動画から学習データと生徒モデルを作る再現可能なパイプラインの公開APIを提供します。'
 
 from .config import (
     DatasetConfig,

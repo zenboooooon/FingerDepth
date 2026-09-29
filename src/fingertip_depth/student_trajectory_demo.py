@@ -1,4 +1,4 @@
-"""Render the Phase 8 student prediction as a fingertip trajectory demo."""
+'学習済みモデルを動画に適用し、指先の深度・三次元軌跡と画像上の注釈を描画するデモを生成します。'
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ FRAME_CACHE_FORMAT_VERSION = 1
 DEMO_SEQUENCE_ID = "finger_movement_2030"
 
 
+# デモ動画のフレーム、手指の観測、画像情報を保持します。
 @dataclass(frozen=True, slots=True)
 class DemoObservation:
     """One identity-view sample and the pixels used for its overlay."""
@@ -48,11 +49,13 @@ class DemoObservation:
     timestamp_ms: int
     landmark_pixels: tuple[tuple[int, int], ...]
 
+    # 観測済みの指先位置を画像上のピクセル座標として返します。
     @property
     def fingertip_pixel(self) -> tuple[int, int]:
         return self.landmark_pixels[-1]
 
 
+# デモの一フレームについて、推定深度と指先位置を保持します。
 @dataclass(frozen=True, slots=True)
 class PredictedObservation:
     """One student prediction with its camera-coordinate point."""
@@ -61,6 +64,7 @@ class PredictedObservation:
     trajectory_point: TrajectoryPoint
 
 
+# 動画からデコード済みの画像とフレーム時刻を保持します。
 @dataclass(frozen=True, slots=True)
 class CachedFrame:
     """One lossless source-video frame."""
@@ -72,6 +76,7 @@ class CachedFrame:
     height: int
 
 
+# 軌跡デモに必要な動画、モデル、設定、フレームキャッシュをまとめます。
 @dataclass(frozen=True, slots=True)
 class DemoInputs:
     """Validated inputs needed by inference and rendering."""
@@ -97,6 +102,7 @@ class DemoInputs:
     selected_sample_ids: frozenset[str]
 
 
+# JSONファイルを読み込みます。
 def _read_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as source:
         value = json.load(source)
@@ -105,12 +111,14 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+# 値が辞書形式であることを検証します。
 def _require_mapping(value: object, *, field: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{field} must be an object")
     return value
 
 
+# 値が正しい形式のSHA-256であることを検証します。
 def _require_sha256(value: object, *, field: str) -> str:
     digest = str(value).lower()
     if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
@@ -118,6 +126,7 @@ def _require_sha256(value: object, *, field: str) -> str:
     return digest
 
 
+# 成果物ファイルの存在と期待されるSHA-256を検証します。
 def _verified_file(path: Path, expected_sha256: object, *, field: str) -> tuple[Path, str]:
     path = path.resolve()
     if not path.is_file():
@@ -129,6 +138,7 @@ def _verified_file(path: Path, expected_sha256: object, *, field: str) -> tuple[
     return path, observed
 
 
+# 解決後のパスが許可された基準ディレクトリ内か確認します。
 def _contained_path(root: Path, relative_path: object, *, field: str) -> Path:
     relative = Path(str(relative_path))
     if relative.is_absolute():
@@ -140,6 +150,7 @@ def _contained_path(root: Path, relative_path: object, *, field: str) -> Path:
     return path
 
 
+# マニフェスト上の成果物名を検証済み実ファイルパスに解決します。
 def _artifact_path(
     manifest_path: Path,
     manifest: Mapping[str, Any],
@@ -155,6 +166,7 @@ def _artifact_path(
     return _verified_file(path, entry.get("sha256"), field=f"artifact {name}")
 
 
+# デモ対象の標本ID一覧をマニフェストから読み込みます。
 def _load_selected_ids(run_manifest_path: Path, run_manifest: Mapping[str, Any]) -> frozenset[str]:
     selected: set[str] = set()
     for name in ("included_train", "included_validation"):
@@ -167,6 +179,7 @@ def _load_selected_ids(run_manifest_path: Path, run_manifest: Mapping[str, Any])
     return frozenset(selected)
 
 
+# 画像に重ねるランドマーク・表示条件を読み込みます。
 def _load_overlay_metadata(
     samples_path: Path,
     *,
@@ -224,17 +237,19 @@ def _load_overlay_metadata(
     return observations
 
 
+# デモ入力で採用されているランドマーク番号を返します。
 def sample_landmark_indices(sample: StudentTrainingSample) -> tuple[int, ...]:
     """Return the fixed Phase 8 landmark order for a loaded training sample."""
 
-    # ``StudentTrainingSample`` intentionally stores coordinates rather than their names.
-    # Phase 8 corpus validation guarantees this order for the selected configuration.
+    # StudentTrainingSampleはランドマーク名ではなく座標だけを保持します。
+    # Phase 8のコーパス検証で、選択設定に対する座標の順序が保証されています。
     count = len(sample.landmark_xy)
     if count != 4:
         raise ValueError(f"trajectory demo expects four index-finger landmarks, got {count}")
     return (5, 6, 7, 8)
 
 
+# 監査済み動画キャッシュのフレームと時刻一覧を読み込みます。
 def _load_cached_frames(
     manifest_path: Path,
     *,
@@ -294,6 +309,7 @@ def _load_cached_frames(
     return tuple(frames), fps, digest
 
 
+# デモの設定・モデル・フレームキャッシュを読み込み、参照先を検証します。
 def load_demo_inputs(run_manifest_path: Path) -> DemoInputs:
     """Resolve and validate the fixed ``finger_movement_2030`` demo inputs."""
 
@@ -457,6 +473,7 @@ def load_demo_inputs(run_manifest_path: Path) -> DemoInputs:
     )
 
 
+# チェックポイント内の値からモデル構成を復元します。
 def _model_config_from_checkpoint(raw: object) -> StudentModelConfig:
     config = _require_mapping(raw, field="checkpoint model_config")
     allowed = {field.name for field in fields(StudentModelConfig)}
@@ -467,6 +484,7 @@ def _model_config_from_checkpoint(raw: object) -> StudentModelConfig:
     return StudentModelConfig(**values)
 
 
+# チェックポイント内の値から学習時の構成を復元します。
 def _training_config_from_checkpoint(raw: object) -> StudentTrainingConfig:
     config = _require_mapping(raw, field="checkpoint training_config")
     allowed = {field.name for field in fields(StudentTrainingConfig)}
@@ -478,6 +496,7 @@ def _training_config_from_checkpoint(raw: object) -> StudentTrainingConfig:
     return StudentTrainingConfig(**values)
 
 
+# 指定条件と利用可能な演算装置から推論デバイスを選びます。
 def _resolve_device(device_name: str) -> torch.device:
     if device_name == "auto":
         return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -487,6 +506,7 @@ def _resolve_device(device_name: str) -> torch.device:
     return device
 
 
+# チェックポイントと設定から生徒モデルを復元し、推論状態にします。
 def load_student_model(
     inputs: DemoInputs,
     *,
@@ -514,6 +534,7 @@ def load_student_model(
     return model, training_config, device, checkpoint
 
 
+# 動画フレームを生徒モデルに通し、指先深度の予測時系列を作成します。
 def predict_trajectory(
     inputs: DemoInputs,
     *,
@@ -580,6 +601,7 @@ def predict_trajectory(
     return tuple(result)
 
 
+# 描画対象の座標範囲に余白を足して表示範囲を決めます。
 def _padded_bounds(values: Sequence[float], *, minimum_span: float) -> tuple[float, float]:
     if not values:
         raise ValueError("plot bounds require at least one value")
@@ -593,6 +615,7 @@ def _padded_bounds(values: Sequence[float], *, minimum_span: float) -> tuple[flo
     return centre - span / 2.0 - padding, centre + span / 2.0 + padding
 
 
+# 文字に影を付けて背景とのコントラストを高めます。
 def _put_text_with_shadow(
     image: np.ndarray,
     text: str,
@@ -624,6 +647,7 @@ def _put_text_with_shadow(
     )
 
 
+# グラフのデータ座標を画像上の座標へ変換する処理を返します。
 def _plot_transform(
     *,
     x_m: float,
@@ -643,6 +667,7 @@ def _plot_transform(
     )
 
 
+# カメラの前後・上下方向から見た指先軌跡を描画します。
 def _draw_xz_panel(
     *,
     height: int,
@@ -795,6 +820,7 @@ def _draw_xz_panel(
     return panel
 
 
+# 一フレームの画像、予測値、軌跡パネルを合成して描画します。
 def render_demo_frame(
     source_bgr: np.ndarray,
     *,
@@ -864,6 +890,7 @@ def render_demo_frame(
     return np.concatenate((source, panel), axis=1)
 
 
+# フレームごとの予測と注釈を動画ファイルに書き出します。
 def render_demo_video(
     path: Path,
     *,
@@ -936,6 +963,7 @@ def render_demo_video(
     return output_size
 
 
+# 入力動画と学習済みモデルから、指先軌跡デモ一式を生成します。
 def create_student_trajectory_demo(
     *,
     run_manifest_path: Path,

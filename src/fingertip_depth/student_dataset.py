@@ -1,9 +1,4 @@
-"""Assemble audited multi-sequence student datasets with train-only HFlip.
-
-The inputs to this module are immutable Phase 7 pseudo-label datasets.  Teacher
-inference is never repeated for augmented views: horizontal reflection preserves
-the optical-axis depth label and changes only the image-plane/camera-x geometry.
-"""
+'複数系列の監査済み疑似ラベルを統合して生徒モデル用データセットを作ります。訓練データだけを左右反転し、画像・座標・カメラ情報を整合させます。\n\n左右反転では教師推論を再実行しません。光軸方向の深度は保ち、画像上のX座標とカメラ情報を反転後の幾何に合わせます。'
 
 from __future__ import annotations
 
@@ -77,6 +72,7 @@ _STABLE_MODEL_FIELDS = (
 )
 
 
+# 比率から必要件数を計算し、端数を切り上げます。
 def _ceil_fractional_count(total: int, fraction: float) -> int:
     """Return ceil(total * fraction) without binary-float boundary drift."""
 
@@ -87,6 +83,7 @@ def _ceil_fractional_count(total: int, fraction: float) -> int:
     return (numerator + rational.denominator - 1) // rational.denominator
 
 
+# 統合元の監査済み疑似ラベルデータと、その検証結果を保持します。
 @dataclass(frozen=True, slots=True)
 class _SourceDataset:
     manifest_path: Path
@@ -101,6 +98,7 @@ class _SourceDataset:
     image_paths: Mapping[str, Path]
 
 
+# JSONファイルを読み込みます。
 def _read_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as source:
         value = json.load(source)
@@ -109,6 +107,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+# JSON Linesを読み込み、行ごとのレコードを返します。
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as source:
@@ -120,6 +119,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+# レコード群をJSON Linesとして保存します。
 def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as target:
@@ -128,6 +128,7 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             target.write("\n")
 
 
+# 文字列が64桁の16進数SHA-256か判定します。
 def _is_sha256(value: object) -> bool:
     text = str(value)
     return len(text) == _SHA256_LENGTH and all(
@@ -135,12 +136,14 @@ def _is_sha256(value: object) -> bool:
     )
 
 
+# 値が正しい形式のSHA-256であることを検証します。
 def _require_sha256(value: object, *, field: str) -> str:
     if not _is_sha256(value):
         raise ValueError(f"{field} must be a lowercase hexadecimal SHA-256")
     return str(value)
 
 
+# 成果物パスをルート配下の相対ファイルとして検証します。
 def _relative_file(root: Path, value: object) -> Path:
     root = root.resolve()
     path = (root / str(value)).resolve()
@@ -151,6 +154,7 @@ def _relative_file(root: Path, value: object) -> Path:
     return path
 
 
+# 値を有限の数値へ変換し、NaN・無限大を拒否します。
 def _finite_number(value: object, *, field: str) -> float:
     number = float(value)
     if not math.isfinite(number):
@@ -158,6 +162,7 @@ def _finite_number(value: object, *, field: str) -> float:
     return number
 
 
+# 値が正の有限数であることを検証します。
 def _positive_number(value: object, *, field: str) -> float:
     number = _finite_number(value, field=field)
     if number <= 0.0:
@@ -165,6 +170,7 @@ def _positive_number(value: object, *, field: str) -> float:
     return number
 
 
+# 二つの数値が許容誤差内で等しいか判定します。
 def _close(left: float, right: float) -> bool:
     return math.isclose(
         left,
@@ -174,6 +180,7 @@ def _close(left: float, right: float) -> bool:
     )
 
 
+# 入力データセットに必要なマニフェスト・画像・CSVがそろうか検証します。
 def _validate_artifacts(root: Path, manifest: Mapping[str, Any]) -> dict[str, Path]:
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, Mapping):
@@ -195,6 +202,7 @@ def _validate_artifacts(root: Path, manifest: Mapping[str, Any]) -> dict[str, Pa
     return verified
 
 
+# カメラ内部パラメーターと画像寸法の整合性を検証します。
 def _validate_camera(camera: object, *, width: int, height: int) -> dict[str, Any]:
     if not isinstance(camera, Mapping):
         raise TypeError("sample camera must be an object")
@@ -209,6 +217,7 @@ def _validate_camera(camera: object, *, width: int, height: int) -> dict[str, An
     return result
 
 
+# ランドマーク番号・座標・信頼度の値を検証します。
 def _validate_landmark(
     landmark: object,
     *,
@@ -240,6 +249,7 @@ def _validate_landmark(
     return result
 
 
+# 標本の識別子、入力画像、座標、教師深度、参照ハッシュを検証します。
 def _validate_sample(
     sample: dict[str, Any],
     *,
@@ -344,6 +354,7 @@ def _validate_sample(
     return image_path
 
 
+# 教師値CSVの列・標本ID・数値が標本データと一致するか確認します。
 def _validate_targets_csv(path: Path, samples: Sequence[Mapping[str, Any]]) -> None:
     with path.open(encoding="utf-8", newline="") as source:
         rows = list(csv.DictReader(source))
@@ -372,6 +383,7 @@ def _validate_targets_csv(path: Path, samples: Sequence[Mapping[str, Any]]) -> N
             raise ValueError("Phase 7 targets.csv metadata differs from samples.jsonl")
 
 
+# 一つの入力疑似ラベルデータセットを読み込み、全参照を検証します。
 def _load_source_dataset(
     path: Path,
     *,
@@ -534,6 +546,7 @@ def _load_source_dataset(
     )
 
 
+# 教師モデルと生成設定の識別情報をまとめます。
 def _teacher_fingerprint(manifest: Mapping[str, Any]) -> dict[str, Any]:
     teacher = manifest["teacher"]
     assert isinstance(teacher, Mapping)
@@ -556,6 +569,7 @@ def _teacher_fingerprint(manifest: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# 複数データセット間のID重複・分割・形式の整合性を検証します。
 def _validate_sources(
     sources: Sequence[_SourceDataset],
     *,
@@ -621,6 +635,7 @@ def _validate_sources(
             )
 
 
+# 反転画像に対応する新しい標本IDと出典情報を作ります。
 def _transfer_identity(source: Path, target: Path, *, mode: Literal["hardlink", "copy"]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if mode == "copy":
@@ -634,6 +649,7 @@ def _transfer_identity(source: Path, target: Path, *, mode: Literal["hardlink", 
         shutil.copy2(source, target)
 
 
+# 左右反転したRGB画像をPNGとして保存します。
 def _write_flipped_png(path: Path, source_bgr: np.ndarray) -> np.ndarray:
     flipped = np.ascontiguousarray(source_bgr[:, ::-1, :])
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -645,6 +661,7 @@ def _write_flipped_png(path: Path, source_bgr: np.ndarray) -> np.ndarray:
     return flipped
 
 
+# 左右反転ビューに合わせて手の左右ラベルを入れ替えます。
 def _view_handedness(value: object, *, hflip: bool) -> str | None:
     if value is None:
         return None
@@ -656,6 +673,7 @@ def _view_handedness(value: object, *, hflip: bool) -> str | None:
     return "Left" if handedness == "Right" else "Right"
 
 
+# 標本画像の元データ、ハッシュ、変換内容を記録します。
 def _source_image_provenance(image: Mapping[str, Any]) -> dict[str, str]:
     return {
         "relative_path": str(image["relative_path"]),
@@ -664,6 +682,7 @@ def _source_image_provenance(image: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+# 正規化されたX座標を左右反転し、Y座標は保ちます。
 def _hflip_normalized_x(*, source_x: float, target_u: int, width: int) -> float:
     """Reflect MediaPipe x while preserving this project's exact pixel rounding.
 
@@ -687,6 +706,7 @@ def _hflip_normalized_x(*, source_x: float, target_u: int, width: int) -> float:
     return fallback
 
 
+# 元画像または左右反転画像と座標・教師値を一標本にまとめます。
 def _make_view_sample(
     source_sample: Mapping[str, Any],
     *,
@@ -791,6 +811,7 @@ def _make_view_sample(
     return sample
 
 
+# 反転前後の画像・カメラ・座標・深度が幾何的に整合するか検証します。
 def _verify_view_geometry(sample: Mapping[str, Any], source: Mapping[str, Any]) -> None:
     variant = sample["augmentation"]["variant"]
     target = sample["target"]
@@ -825,6 +846,7 @@ def _verify_view_geometry(sample: Mapping[str, Any], source: Mapping[str, Any]) 
         raise ValueError("augmented target XYZ is inconsistent with transformed pixel and K")
 
 
+# 標本IDと教師深度を対応づけたCSVを保存します。
 def _write_targets_csv(path: Path, samples: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -867,6 +889,7 @@ def _write_targets_csv(path: Path, samples: Sequence[Mapping[str, Any]]) -> None
             )
 
 
+# 関係するPythonソースのSHA-256を集めて再現性を記録します。
 def _implementation_hashes() -> dict[str, str]:
     package_dir = Path(__file__).resolve().parent
     project_dir = package_dir.parents[1]
@@ -883,6 +906,7 @@ def _implementation_hashes() -> dict[str, str]:
     return {name: sha256_file(path) for name, path in candidates.items() if path.is_file()}
 
 
+# 複数のハッシュを順序付きで結合し、全体ダイジェストを作ります。
 def _concat_digest(values: Sequence[str]) -> str:
     digest = hashlib.sha256()
     for value in values:
@@ -890,6 +914,7 @@ def _concat_digest(values: Sequence[str]) -> str:
     return digest.hexdigest()
 
 
+# 検証済み疑似ラベル系列を統合し、訓練用反転ビューを含むデータセットを作成します。
 def build_student_dataset(
     *,
     source_manifest_paths: Sequence[Path],

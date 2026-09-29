@@ -1,4 +1,4 @@
-"""Build audited Depth Pro pseudo-label datasets from prepared hand frames."""
+'準備済みフレームを教師モデルへ渡して疑似ラベルを生成し、教師情報・進捗・再開状態を検証可能な形式で保存します。'
 
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SPLITS = frozenset({"train", "validation", "test", "unassigned"})
 
 
+# 比較処理が深度予測結果から参照する値の契約を表します。
 class PredictionLike(Protocol):
     depth_m: np.ndarray
     inference_ms: float
@@ -54,10 +55,13 @@ class PredictionLike(Protocol):
     extras: Mapping[str, Any]
 
 
+# 疑似ラベル生成で使う教師モデルの推論・メタデータ取得の契約です。
 class TeacherEstimator(Protocol):
+    # モデル名・版・実行条件など推論モデルの情報を返します。
     @property
     def metadata(self) -> Mapping[str, Any]: ...
 
+    # 入力からモデルの深度予測を計算し、値と推論情報を返します。
     def predict(
         self,
         rgb: np.ndarray,
@@ -67,6 +71,7 @@ class TeacherEstimator(Protocol):
     ) -> PredictionLike: ...
 
 
+# JSONファイルを読み込みます。
 def _read_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as source:
         value = json.load(source)
@@ -75,6 +80,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+# JSON Linesを読み込み、行ごとのレコードを返します。
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as source:
@@ -86,7 +92,9 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+# レコード群をJSON Linesとして保存します。
 def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    # 一時ファイルへ内容を書き込み、完成後の原子的な置換に備えます。
     def _write(temp_path: Path) -> None:
         with temp_path.open("w", encoding="utf-8") as target:
             for row in rows:
@@ -96,6 +104,7 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     _atomic_generate_file(path, _write)
 
 
+# JSONのキー順・空白を正規化し、ハッシュ計算用のバイト列を作ります。
 def _canonical_json_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -106,18 +115,21 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+# レコードの正規化表現からSHA-256を計算します。
 def _record_sha256(record: Mapping[str, Any]) -> str:
     payload = dict(record)
     payload.pop("record_sha256", None)
     return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
 
 
+# レコードに内容検証用のSHA-256を付加します。
 def _checksummed_record(payload: Mapping[str, Any]) -> dict[str, Any]:
     record = dict(payload)
     record["record_sha256"] = _record_sha256(record)
     return record
 
 
+# 進捗レコードをジャーナルに書く一行形式へ変換します。
 def _progress_line(record: Mapping[str, Any]) -> bytes:
     return (
         json.dumps(
@@ -130,6 +142,7 @@ def _progress_line(record: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+# ファイル作成・置換を含むディレクトリ更新をストレージへ同期します。
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY)
     try:
@@ -138,6 +151,7 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+# 出力先を排他的に確保し、同時生成を防ぎます。
 @contextmanager
 def _exclusive_output_directory(path: Path) -> Iterator[None]:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -159,12 +173,14 @@ def _exclusive_output_directory(path: Path) -> Iterator[None]:
             os.close(descriptor)
 
 
+# 最終ファイルと同じディレクトリ内に一時ファイルのパスを作ります。
 def _temporary_sibling_path(path: Path) -> Path:
     suffix = path.suffix
     basename = path.name[: -len(suffix)] if suffix else path.name
     return path.with_name(f".{basename}.tmp{suffix}")
 
 
+# 前回中断で残った不完全な一時ファイルを削除します。
 def _discard_incomplete_temp(path: Path) -> None:
     if path.is_symlink():
         raise ValueError(f"incomplete temporary file must not be a symbolic link: {path}")
@@ -176,6 +192,7 @@ def _discard_incomplete_temp(path: Path) -> None:
     _fsync_directory(path.parent)
 
 
+# 通常ファイルの内容をストレージへ同期します。
 def _fsync_regular_file(path: Path) -> None:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"atomic output is missing or unsafe: {path}")
@@ -183,6 +200,7 @@ def _fsync_regular_file(path: Path) -> None:
         os.fsync(source.fileno())
 
 
+# 一時ファイルへ生成後、完成したファイルだけを原子的に公開します。
 def _atomic_generate_file(
     path: Path,
     writer: Callable[[Path], None],
@@ -213,6 +231,7 @@ def _atomic_generate_file(
         _fsync_directory(current)
 
 
+# テキストを一時ファイル経由で安全に置き換えます。
 def _atomic_write_text(
     path: Path,
     value: str,
@@ -226,6 +245,7 @@ def _atomic_write_text(
     )
 
 
+# バッファが空になるまで全バイトを書き込みます。
 def _write_all(target: Any, payload: bytes) -> None:
     remaining = memoryview(payload)
     while remaining:
@@ -235,6 +255,7 @@ def _write_all(target: Any, payload: bytes) -> None:
         remaining = remaining[written:]
 
 
+# 再開用の進捗ジャーナルを初期化します。
 def _create_progress_journal(path: Path, header: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink() or path.exists():
@@ -257,10 +278,12 @@ def _create_progress_journal(path: Path, header: Mapping[str, Any]) -> None:
     _fsync_directory(path.parent)
 
 
+# 一件分の進捗をチェックサム付きで記録します。
 def _append_progress_record(path: Path, record: Mapping[str, Any]) -> None:
     _append_progress_records(path, (record,))
 
 
+# 複数件の進捗記録をジャーナルへ追加します。
 def _append_progress_records(
     path: Path,
     records: Sequence[Mapping[str, Any]],
@@ -273,12 +296,14 @@ def _append_progress_records(
         os.fsync(target.fileno())
 
 
+# 不正な末尾より後の進捗記録を切り落とします。
 def _truncate_progress_journal(path: Path, size: int) -> None:
     with path.open("r+b", buffering=0) as target:
         target.truncate(size)
         os.fsync(target.fileno())
 
 
+# 進捗ジャーナルの一行を解析して検証します。
 def _decode_progress_record(line: bytes, *, line_number: int) -> dict[str, Any]:
     value = json.loads(line.decode("utf-8"))
     if not isinstance(value, dict):
@@ -292,6 +317,7 @@ def _decode_progress_record(line: bytes, *, line_number: int) -> dict[str, Any]:
     return value
 
 
+# 進捗ジャーナルを読み、最後に確定した処理状態を復元します。
 def _load_progress_journal(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if path.is_symlink() or not path.is_file():
         raise FileNotFoundError(f"resume progress journal is missing or unsafe: {path}")
@@ -329,6 +355,7 @@ def _load_progress_journal(path: Path) -> tuple[dict[str, Any], list[dict[str, A
     return header, outcomes
 
 
+# 初回書き込み途中で破損した進捗ジャーナルを安全な初期状態へ戻します。
 def _recover_torn_initial_progress_journal(
     path: Path,
     *,
@@ -353,16 +380,19 @@ def _recover_torn_initial_progress_journal(
     return True
 
 
+# 準備済み標本行を正規化し、内容ハッシュを計算します。
 def _prepared_row_sha256(row: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json_bytes(dict(row))).hexdigest()
 
 
+# 教師モデルと重みの安定した識別情報を作ります。
 def _stable_teacher_identity(metadata: Mapping[str, Any]) -> dict[str, Any]:
     identity = dict(metadata)
     identity.pop("checkpoint_path", None)
     return identity
 
 
+# 成果物パスをルート配下の相対ファイルとして検証します。
 def _relative_file(root: Path, relative_path: object) -> Path:
     path = (root / str(relative_path)).resolve()
     if not path.is_relative_to(root.resolve()):
@@ -372,12 +402,14 @@ def _relative_file(root: Path, relative_path: object) -> Path:
     return path
 
 
+# 保存先に使う識別子の文字種・長さを検証します。
 def _validate_identifier(value: str, *, field: str) -> str:
     if not _SEQUENCE_ID_PATTERN.fullmatch(value):
         raise ValueError(f"{field} must match {_SEQUENCE_ID_PATTERN.pattern!r}; got {value!r}")
     return value
 
 
+# 画像寸法と焦点距離情報から内部パラメーターを作ります。
 def _camera_intrinsics(value: object) -> CameraIntrinsics:
     if not isinstance(value, Mapping):
         raise TypeError("prepared camera_intrinsics must be an object")
@@ -389,6 +421,7 @@ def _camera_intrinsics(value: object) -> CameraIntrinsics:
     )
 
 
+# 検出結果から設定に合う手を一つ選びます。
 def _selected_hand(row: Mapping[str, Any]) -> Mapping[str, Any]:
     selected_index = row.get("selected_hand_index")
     hands = row.get("hands")
@@ -400,6 +433,7 @@ def _selected_hand(row: Mapping[str, Any]) -> Mapping[str, Any]:
     raise ValueError("accepted prepared row does not contain selected_hand_index")
 
 
+# モデル入力に使うランドマーク番号と座標を抽出します。
 def _feature_landmarks(
     hand: Mapping[str, Any],
     *,
@@ -424,6 +458,7 @@ def _feature_landmarks(
     return [dict(by_index[index]) for index in expected_indices]
 
 
+# 教師値を付ける対象の指先ランドマークを取得します。
 def _target_landmark(row: Mapping[str, Any], *, expected_index: int) -> dict[str, Any]:
     value = row.get("target_landmark")
     if not isinstance(value, Mapping):
@@ -440,6 +475,7 @@ def _target_landmark(row: Mapping[str, Any], *, expected_index: int) -> dict[str
     return dict(value)
 
 
+# 準備済みフレームを教師環境へ安全に渡す形式へ変換します。
 def _transfer_frame(source: Path, target: Path, *, mode: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if mode == "copy":
@@ -455,6 +491,7 @@ def _transfer_frame(source: Path, target: Path, *, mode: str) -> None:
         raise ValueError("frame_transfer_mode must be 'hardlink' or 'copy'")
 
 
+# 各処理区間の時間を集計し、所要時間の要約を作ります。
 def _timing_summary(values: Sequence[float]) -> dict[str, float | int | None]:
     array = np.asarray(values, dtype=np.float64)
     if array.size == 0:
@@ -467,6 +504,7 @@ def _timing_summary(values: Sequence[float]) -> dict[str, float | int | None]:
     }
 
 
+# 使用した教師モデルを選んだ根拠と選択時の値を記録します。
 def _teacher_selection_evidence(
     path: Path | None,
     *,
@@ -535,6 +573,7 @@ def _teacher_selection_evidence(
     }
 
 
+# 関係するPythonソースのSHA-256を集めて再現性を記録します。
 def _implementation_hashes() -> dict[str, str]:
     package_dir = Path(__file__).resolve().parent
     project_dir = package_dir.parents[1]
@@ -563,6 +602,7 @@ def _implementation_hashes() -> dict[str, str]:
     return {name: sha256_file(path) for name, path in candidates.items() if path.is_file()}
 
 
+# 教師推論前に標本を除外した理由を記録します。
 def _prepared_rejection_record(row: Mapping[str, Any], *, sequence_id: str) -> dict[str, Any]:
     return {
         "sequence_id": sequence_id,
@@ -573,6 +613,7 @@ def _prepared_rejection_record(row: Mapping[str, Any], *, sequence_id: str) -> d
     }
 
 
+# 教師推論時に標本を除外した理由と状態を記録します。
 def _teacher_rejection_record(
     row: Mapping[str, Any], *, sequence_id: str, detail: str
 ) -> dict[str, Any]:
@@ -586,6 +627,7 @@ def _teacher_rejection_record(
     }
 
 
+# 疑似ラベル、入力参照、教師情報を一件の標本レコードにまとめます。
 def _sample_record(
     row: Mapping[str, Any],
     *,
@@ -653,6 +695,7 @@ def _sample_record(
     }
 
 
+# 疑似ラベル標本から時刻付き三次元軌跡点を作ります。
 def _trajectory_point_from_sample(sample: Mapping[str, Any]) -> TrajectoryPoint:
     target = sample.get("target")
     if not isinstance(target, Mapping):
@@ -671,6 +714,7 @@ def _trajectory_point_from_sample(sample: Mapping[str, Any]) -> TrajectoryPoint:
     )
 
 
+# 教師環境へ渡した画像と付随情報のハッシュ・寸法を検証します。
 def _validate_transferred_frame(
     target: Path,
     *,
@@ -694,6 +738,7 @@ def _validate_transferred_frame(
         raise ValueError(f"transferred BGR pixel mismatch at frame {row['frame_index']}")
 
 
+# フレームを転送し、既存時は内容が同一であることを検証します。
 def _transfer_or_validate_frame(
     source: Path,
     target: Path,
@@ -724,6 +769,7 @@ def _transfer_or_validate_frame(
     _fsync_directory(output_dir)
 
 
+# 再開対象の既存疑似ラベルが入力・教師・チェックサムと一致するか確認します。
 def _validate_resumed_sample(
     sample: Mapping[str, Any],
     *,
@@ -781,6 +827,7 @@ def _validate_resumed_sample(
     return dict(sample)
 
 
+# 進捗記録と生成済み標本・除外記録の対応を検証します。
 def _validate_progress_outcomes(
     outcomes: Sequence[Mapping[str, Any]],
     *,
@@ -914,6 +961,7 @@ def _validate_progress_outcomes(
     )
 
 
+# 疑似ラベルから系列ごとの深度・位置変化を集計します。
 def _trajectory_summary(points: Sequence[TrajectoryPoint]) -> dict[str, Any]:
     if not points:
         return {"point_count": 0}
@@ -926,6 +974,7 @@ def _trajectory_summary(points: Sequence[TrajectoryPoint]) -> dict[str, Any]:
     }
 
 
+# 準備済みフレームにDepth Pro教師を適用し、疑似ラベルを生成または再開します。
 def generate_depth_pro_pseudo_labels(
     *,
     prepared_manifest_path: Path,
@@ -962,6 +1011,7 @@ def generate_depth_pro_pseudo_labels(
         )
 
 
+# 出力先のロックを保持した状態で疑似ラベルを生成・再開します。
 def _generate_depth_pro_pseudo_labels_locked(
     *,
     prepared_manifest_path: Path,
@@ -1192,6 +1242,7 @@ def _generate_depth_pro_pseudo_labels_locked(
     )
     pending_progress_records: list[dict[str, Any]] = []
 
+    # 完了済み標本の識別情報とチェックサムを作ります。
     def _checkpoint_record(record: dict[str, Any]) -> None:
         pending_progress_records.append(record)
         if len(pending_progress_records) >= checkpoint_interval_frames:
@@ -1502,6 +1553,7 @@ def _generate_depth_pro_pseudo_labels_locked(
     return manifest
 
 
+# 教師深度の集計結果をCSVへ書き出します。
 def write_teacher_depth_summary_csv(
     path: Path,
     *,
@@ -1509,6 +1561,7 @@ def write_teacher_depth_summary_csv(
 ) -> None:
     """Write a compact per-frame target table for inspection and external tooling."""
 
+    # 一時ファイルへ内容を書き込み、完成後の原子的な置換に備えます。
     def _write(temp_path: Path) -> None:
         with temp_path.open("w", newline="", encoding="utf-8") as target_file:
             writer = csv.DictWriter(

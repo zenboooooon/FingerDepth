@@ -1,4 +1,4 @@
-"""Deterministic discovery and identity assignment for training videos."""
+'入力場所から動画を決定的な順序で探索し、重複を検出して各動画の分割・系列ID・ハッシュを割り当てます。'
 
 from __future__ import annotations
 
@@ -16,14 +16,17 @@ _HASH_CHUNK_SIZE = 1024 * 1024
 _MAX_SLUG_LENGTH = 80
 
 
+# 動画の探索条件が不正、または対象動画がない場合に送出します。
 class VideoDiscoveryError(ValueError):
     """Raised when the input video collection is unsafe or incomplete."""
 
 
+# 同じ内容の動画が重複して見つかった場合に送出します。
 class DuplicateVideoError(VideoDiscoveryError):
     """Raised when two paths contain exactly the same source bytes."""
 
 
+# 探索した動画のパス、分割、系列ID、内容ハッシュを保持します。
 @dataclass(frozen=True, slots=True)
 class DiscoveredVideo:
     """One immutable source-video descriptor used by later pipeline stages."""
@@ -36,12 +39,14 @@ class DiscoveredVideo:
     size_bytes: int
     focal_35mm_mm: float
 
+    # 動画のSHA-256を計算して返します。
     @property
     def sha256(self) -> str:
         """Compatibility-friendly short name for the source byte digest."""
 
         return self.source_sha256
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, object]:
         return {
             "path": self.relative_path.as_posix(),
@@ -53,6 +58,7 @@ class DiscoveredVideo:
         }
 
 
+# 指定したファイルの内容からSHA-256を計算します。
 def sha256_file(path: Path) -> str:
     """Hash a source file without loading the complete video into memory."""
 
@@ -63,6 +69,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# ファイルを一定サイズずつ読み、内容のSHA-256とバイト数を計算します。
 def _stable_sha256(path: Path) -> tuple[str, int]:
     before = path.stat()
     if before.st_size == 0:
@@ -78,6 +85,7 @@ def _stable_sha256(path: Path) -> tuple[str, int]:
     return digest, before.st_size
 
 
+# パスやファイル名に使える安全な文字列へ変換します。
 def safe_slug(stem: str) -> str:
     """Return a stable lowercase ASCII slug, falling back for non-ASCII-only names."""
 
@@ -90,6 +98,7 @@ def safe_slug(stem: str) -> str:
     return truncated or "video"
 
 
+# 動画の相対パスと分割情報から安定した系列IDを作成します。
 def sequence_id_for(path: Path, source_sha256: str) -> str:
     """Build the filesystem-safe sequence identity from name and source content."""
 
@@ -98,6 +107,7 @@ def sequence_id_for(path: Path, source_sha256: str) -> str:
     return f"{safe_slug(path.stem)}-{source_sha256[:12]}"
 
 
+# パスをプロジェクト基準の相対パスへ変換します。
 def _relative_to_project(path: Path, project_root: Path) -> Path:
     try:
         return path.relative_to(project_root)
@@ -105,6 +115,7 @@ def _relative_to_project(path: Path, project_root: Path) -> Path:
         raise VideoDiscoveryError(f"video resolves outside the project root: {path}") from error
 
 
+# 指定場所を再帰探索し、対象動画を安定した順序で列挙します。
 def _video_paths(root: Path, extensions: tuple[str, ...], *, split: VideoSplit) -> list[Path]:
     if not root.is_dir():
         raise FileNotFoundError(f"{split} video directory does not exist: {root}")
@@ -122,6 +133,7 @@ def _video_paths(root: Path, extensions: tuple[str, ...], *, split: VideoSplit) 
     )
 
 
+# 動画を探索し、分割・系列ID・内容ハッシュ付きの一覧を返します。
 def discover_videos(config: PipelineConfig) -> tuple[DiscoveredVideo, ...]:
     """Discover, hash and validate all configured train and validation videos.
 

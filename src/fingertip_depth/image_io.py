@@ -1,4 +1,4 @@
-"""Image decoding helpers, including HEIF/HEIC fallback support."""
+'通常の画像に加えてHEIF/HEIC形式も読み込み、後続処理で使える画像配列に変換します。'
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import pillow_heif
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 
+# 画像ファイルを読み込み、OpenCV形式のBGR配列を返します。
 def read_bgr(path: Path) -> np.ndarray | None:
     """Read an image as uint8 BGR, falling back to Pillow for HEIF/HEIC.
 

@@ -1,4 +1,4 @@
-"""Command-line entry point for the video-to-student training pipeline."""
+'動画から生徒モデルを作る学習パイプラインを起動し、実行状況や生成結果をコマンドラインに表示します。'
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 DEFAULT_CONFIG_PATH = Path("configs/training_pipeline.toml")
 
 
+# 学習パイプライン用のコマンドライン引数解析器を作成します。
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fingertip-train",
@@ -55,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# パイプラインの実行概要を指定形式で保存します。
 def _write_summary(summary: object) -> None:
     as_dict = getattr(summary, "as_dict", None)
     if not callable(as_dict):
@@ -63,6 +65,7 @@ def _write_summary(summary: object) -> None:
     sys.stdout.write("\n")
 
 
+# コマンドライン引数を解釈して処理を実行し、終了コードを返します。
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 

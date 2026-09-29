@@ -1,11 +1,11 @@
-"""Fixed experiment and MediaPipe hand-landmark constants."""
+'実験で固定して使うカメラ条件、MediaPipeの手指ランドマーク番号などの定数を定義します。'
 
 FINGERTIP_LANDMARK_INDEX = 8
 FINGERTIP_LANDMARK_NAME = "INDEX_FINGER_TIP"
 
-# MediaPipe Hand Landmarker uses this stable 21-landmark topology. Keep the
-# tuple index aligned with MediaPipe's landmark index so callers can validate
-# serialized feature order without importing MediaPipe itself.
+# MediaPipe Hand Landmarkerの21点構成を使います。タプルの位置をランドマーク番号と一致させ、
+# MediaPipeの番号とずれないようにすることで、呼び出し側が
+# MediaPipe本体を読み込まずに特徴量の並びを検証できます。
 HAND_LANDMARK_NAMES = (
     "WRIST",
     "THUMB_CMC",
@@ -30,22 +30,10 @@ HAND_LANDMARK_NAMES = (
     "PINKY_TIP",
 )
 
-# The initial student-model feature set covers the complete index-finger chain.
-# Landmark 8 remains the single-pixel pseudo-label target for backward
-# compatibility with phases 1 and 2.
+# 生徒モデルの初期特徴量には、人差し指の関節から先端までを含めます。
+# ランドマーク8を単一画素の疑似ラベル対象として使います。
 DEFAULT_FEATURE_LANDMARK_INDICES = (5, 6, 7, 8)
 DEFAULT_TARGET_LANDMARK_INDEX = FINGERTIP_LANDMARK_INDEX
-
-# Pin both the upstream implementation and the checkpoint selected by hubconf.py.
-METRIC3D_HUB_REPO = "YvanYin/Metric3D:eb5b6fac0dc155e4e52f576e304fbf11655ff339"
-METRIC3D_HUB_MODEL = "metric3d_vit_small"
-METRIC3D_CHECKPOINT_URL = (
-    "https://huggingface.co/JUGGHM/Metric3D/resolve/main/metric_depth_vit_small_800k.pth"
-)
-METRIC3D_INPUT_HEIGHT = 616
-METRIC3D_INPUT_WIDTH = 1064
-METRIC3D_CANONICAL_FOCAL_PX = 1000.0
-METRIC3D_MAX_DEPTH_M = 300.0
 
 HAND_LANDMARKER_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"

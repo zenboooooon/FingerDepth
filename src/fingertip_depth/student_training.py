@@ -1,4 +1,4 @@
-"""Audited Phase 8 training for the single-frame fingertip-depth student."""
+'疑似ラベルデータの検証、任意の教師外れ値除外、生徒モデルの訓練と評価、チェックポイントや監査記録の保存を担当します。'
 
 from __future__ import annotations
 
@@ -45,6 +45,7 @@ DEFAULT_IMAGE_MEAN = (0.485, 0.456, 0.406)
 DEFAULT_IMAGE_STD = (0.229, 0.224, 0.225)
 
 
+# 生徒モデルの学習回数、最適化、分割、再現性に関する設定です。
 @dataclass(frozen=True, slots=True)
 class StudentTrainingConfig:
     """Optimization and deterministic preprocessing settings."""
@@ -67,6 +68,7 @@ class StudentTrainingConfig:
     preload_images: bool = True
     verify_image_png_sha256: bool = True
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if self.epochs <= 0 or self.batch_size <= 0:
             raise ValueError("epochs and batch_size must be positive")
@@ -93,6 +95,7 @@ class StudentTrainingConfig:
         if self.precision not in {"float32", "bfloat16"}:
             raise ValueError("precision must be float32 or bfloat16")
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["image_mean"] = list(self.image_mean)
@@ -100,6 +103,7 @@ class StudentTrainingConfig:
         return value
 
 
+# 教師深度の時系列スパイクを除外する条件を保持します。
 @dataclass(frozen=True, slots=True)
 class TeacherSpikeFilterConfig:
     """Deterministic run-level filtering of isolated teacher-depth excursions."""
@@ -113,6 +117,7 @@ class TeacherSpikeFilterConfig:
     mad_multiplier: float = 6.0
     mad_scale: float = 1.4826
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if self.frame_radius <= 0:
             raise ValueError("teacher spike frame_radius must be positive")
@@ -129,10 +134,12 @@ class TeacherSpikeFilterConfig:
         if any(not math.isfinite(value) or value <= 0.0 for value in values):
             raise ValueError("teacher spike thresholds must be finite and positive")
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
+# 画像、ランドマーク、教師深度、出典からなる学習標本です。
 @dataclass(frozen=True, slots=True)
 class StudentTrainingSample:
     sample_id: str
@@ -150,6 +157,7 @@ class StudentTrainingSample:
     augmentation_variant: Literal["identity", "hflip"]
 
 
+# 読み込みと検証を終えた学習コーパスおよび分割情報を保持します。
 @dataclass(frozen=True, slots=True)
 class LoadedStudentCorpus:
     manifest_path: Path
@@ -162,6 +170,7 @@ class LoadedStudentCorpus:
     artifact_sha256: Mapping[str, str]
 
 
+# スパイク判定後に残った標本と、除外に関する記録を保持します。
 @dataclass(frozen=True, slots=True)
 class TeacherSpikeFilterResult:
     """Exact retained cohorts and identity-only temporal filter decisions."""
@@ -175,6 +184,7 @@ class TeacherSpikeFilterResult:
     included_validation_ids_sha256: str
 
 
+# JSONファイルを読み込みます。
 def _read_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as source:
         value = json.load(source)
@@ -183,6 +193,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+# JSON Linesを読み込み、行ごとのレコードを返します。
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as source:
@@ -194,6 +205,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+# 値が正しい形式のSHA-256であることを検証します。
 def _require_sha256(value: object, *, field: str) -> str:
     digest = str(value).lower()
     if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
@@ -201,6 +213,7 @@ def _require_sha256(value: object, *, field: str) -> str:
     return digest
 
 
+# 指定ファイルが成果物ルートの外へ逸脱しないことを検証します。
 def _contained_file(root: Path, relative_path: object) -> Path:
     relative = Path(str(relative_path))
     if relative.is_absolute():
@@ -214,6 +227,7 @@ def _contained_file(root: Path, relative_path: object) -> Path:
     return path
 
 
+# 選択ランドマークが学習コーパスとモデル設定で一致するか検証します。
 def _validate_landmark_selection(indices: Sequence[int]) -> tuple[int, ...]:
     selected = tuple(int(index) for index in indices)
     if not selected or len(set(selected)) != len(selected):
@@ -223,6 +237,7 @@ def _validate_landmark_selection(indices: Sequence[int]) -> tuple[int, ...]:
     return selected
 
 
+# データセットのマニフェストと標本を読み込み、ハッシュや参照ファイルを検証します。
 def load_student_corpus(
     manifest_path: Path,
     *,
@@ -432,8 +447,8 @@ def load_student_corpus(
                 raise ValueError("sample landmark x/y must be finite normalized coordinates")
             if raw.get("in_frame") is not True:
                 raise ValueError("Phase 8 landmark inputs must be in-frame")
-            # z_mediapipe_relative is intentionally neither read nor retained:
-            # it can leak depth-correlated information into the student.
+            # z_mediapipe_relativeは深度と相関する情報が漏れる可能性があるため、
+            # 読み込みも保存もしません。
             landmark_xy.append((x, y))
 
         target = row.get("target")
@@ -549,6 +564,7 @@ def load_student_corpus(
     )
 
 
+# 順序を固定した標本ID一覧のSHA-256を計算します。
 def _ordered_sample_ids_sha256(samples: Sequence[StudentTrainingSample]) -> str:
     digest = hashlib.sha256()
     for sample in samples:
@@ -557,6 +573,7 @@ def _ordered_sample_ids_sha256(samples: Sequence[StudentTrainingSample]) -> str:
     return digest.hexdigest()
 
 
+# データ分割・系列ごとに教師深度の統計を計算します。
 def _identity_depth_statistics(samples: Sequence[StudentTrainingSample]) -> dict[str, Any]:
     values = np.asarray(
         [sample.target_depth_m for sample in samples if sample.augmentation_variant == "identity"],
@@ -579,6 +596,7 @@ def _identity_depth_statistics(samples: Sequence[StudentTrainingSample]) -> dict
     }
 
 
+# 教師深度の急変を系列内で検出し、設定に応じて該当標本を除外します。
 def apply_teacher_spike_filter(
     corpus: LoadedStudentCorpus,
     config: TeacherSpikeFilterConfig,
@@ -728,6 +746,7 @@ def apply_teacher_spike_filter(
                     }
                 )
 
+    # 外れ値判定後に保持する標本一覧を返します。
     def retained(samples: Sequence[StudentTrainingSample]) -> tuple[StudentTrainingSample, ...]:
         return tuple(
             sample
@@ -826,9 +845,11 @@ def apply_teacher_spike_filter(
     )
 
 
+# 学習・評価ループへ標本を渡すPyTorchデータセットです。
 class FingertipStudentDataset(Dataset[dict[str, Any]]):
     """Direct-resize RGB and x/y-only hand landmarks for one fixed split."""
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(
         self,
         samples: Sequence[StudentTrainingSample],
@@ -857,6 +878,7 @@ class FingertipStudentDataset(Dataset[dict[str, Any]]):
                 if progress is not None and (index + 1) % 500 == 0:
                     progress(f"preloaded {index + 1}/{len(self.samples)} images")
 
+    # 標本画像を読み込み、モデル入力サイズと画素範囲に整えます。
     def _load_image(self, sample: StudentTrainingSample) -> np.ndarray:
         encoded = sample.image_path.read_bytes()
         if self.verify_png_sha256:
@@ -874,9 +896,11 @@ class FingertipStudentDataset(Dataset[dict[str, Any]]):
         )
         return np.ascontiguousarray(resized.transpose(2, 0, 1))
 
+    # データセットに含まれる標本の件数を返します。
     def __len__(self) -> int:
         return len(self.samples)
 
+    # 指定された標本の画像・入力特徴・教師値を返します。
     def __getitem__(self, index: int) -> dict[str, Any]:
         sample = self.samples[index]
         image_uint8 = (
@@ -884,7 +908,7 @@ class FingertipStudentDataset(Dataset[dict[str, Any]]):
         )
         image = torch.from_numpy(image_uint8).to(dtype=torch.float32).div_(255.0)
         image = image.sub(self.image_mean).div(self.image_std)
-        # Center x/y to [-1, 1]. MediaPipe relative z is deliberately absent.
+        # X・Y座標を[-1, 1]へ変換します。MediaPipeの相対Zは入力に含めません。
         landmark_xy = torch.tensor(sample.landmark_xy, dtype=torch.float32)
         landmark_xy = landmark_xy.mul(2.0).sub(1.0)
         return {
@@ -898,6 +922,7 @@ class FingertipStudentDataset(Dataset[dict[str, Any]]):
         }
 
 
+# 予測値と教師値から回帰損失、絶対誤差などの指標を計算します。
 def regression_metrics(prediction_m: np.ndarray, target_m: np.ndarray) -> dict[str, Any]:
     prediction = np.asarray(prediction_m, dtype=np.float64)
     target = np.asarray(target_m, dtype=np.float64)
@@ -934,6 +959,7 @@ def regression_metrics(prediction_m: np.ndarray, target_m: np.ndarray) -> dict[s
     }
 
 
+# 予測と教師の軌跡について、フレーム間移動量の誤差を集計します。
 def _trajectory_delta_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     absolute_errors: list[float] = []
     pair_count = 0
@@ -961,6 +987,7 @@ def _trajectory_delta_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, An
     }
 
 
+# Python・NumPy・PyTorchなどの乱数シードを設定します。
 def _seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -969,6 +996,7 @@ def _seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+# モデル重み辞書の内容を決定的にシリアライズしてSHA-256を計算します。
 def _state_dict_sha256(module: nn.Module) -> str:
     digest = hashlib.sha256()
     for name, tensor in sorted(module.state_dict().items()):
@@ -980,6 +1008,7 @@ def _state_dict_sha256(module: nn.Module) -> str:
     return digest.hexdigest()
 
 
+# 設定に従って学習対象パラメーターをまとめ、最適化器を作成します。
 def _build_optimizer(
     model: FingertipDepthStudent,
     config: StudentTrainingConfig,
@@ -1009,6 +1038,7 @@ def _build_optimizer(
     return torch.optim.AdamW(parameter_groups)
 
 
+# ウォームアップ後に学習率をコサイン減衰させるスケジューラーを作成します。
 def _cosine_warmup_scheduler(
     optimizer: torch.optim.Optimizer,
     *,
@@ -1017,6 +1047,7 @@ def _cosine_warmup_scheduler(
 ) -> torch.optim.lr_scheduler.LambdaLR:
     warmup_steps = round(total_steps * warmup_fraction)
 
+    # 比率と基準値から適用する件数倍率を計算します。
     def multiplier(step: int) -> float:
         if warmup_steps > 0 and step < warmup_steps:
             return float(step + 1) / float(warmup_steps)
@@ -1027,10 +1058,12 @@ def _cosine_warmup_scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)
 
 
+# デバイスと設定に応じて自動混合精度を有効にするか判定します。
 def _autocast_enabled(config: StudentTrainingConfig, device: torch.device) -> bool:
     return config.precision == "bfloat16" and device.type == "cuda"
 
 
+# 学習データを一巡し、損失に基づいてモデルの重みを更新します。
 def _train_one_epoch(
     model: FingertipDepthStudent,
     loader: DataLoader[dict[str, Any]],
@@ -1079,6 +1112,7 @@ def _train_one_epoch(
     }
 
 
+# 評価データを推論し、損失と深度推定指標を計算します。
 def _evaluate_model(
     model: FingertipDepthStudent,
     loader: DataLoader[dict[str, Any]],
@@ -1119,6 +1153,7 @@ def _evaluate_model(
     return metrics, rows
 
 
+# レコード群をJSON Linesとして保存します。
 def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as target:
         for row in rows:
@@ -1126,6 +1161,7 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             target.write("\n")
 
 
+# スパイク判定、除外標本、適用条件を監査記録に保存します。
 def _write_teacher_spike_filter_artifacts(
     output_dir: Path,
     result: TeacherSpikeFilterResult,
@@ -1175,6 +1211,7 @@ def _write_teacher_spike_filter_artifacts(
     return report, artifacts
 
 
+# 標本ID、教師値、予測値を対応づけたCSVを保存します。
 def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     fieldnames = (
         "sample_id",
@@ -1200,6 +1237,7 @@ def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> Non
             )
 
 
+# モデル重み、設定、最良指標を再開可能なチェックポイントに保存します。
 def _save_checkpoint(
     path: Path,
     *,
@@ -1231,6 +1269,7 @@ def _save_checkpoint(
     os.replace(temporary, path)
 
 
+# 任意の設定値をJSONで表現できる標準型へ変換します。
 def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -1241,6 +1280,7 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+# 関係するPythonソースのSHA-256を集めて再現性を記録します。
 def _implementation_hashes() -> dict[str, str]:
     project_dir = Path(__file__).resolve().parents[2]
     paths = {
@@ -1257,6 +1297,7 @@ def _implementation_hashes() -> dict[str, str]:
     return {name: sha256_file(path) for name, path in paths.items()}
 
 
+# Python・ライブラリ・実行デバイスなど実行環境を記録します。
 def _runtime_metadata(device: torch.device) -> dict[str, Any]:
     cuda: dict[str, Any] | None = None
     if device.type == "cuda":
@@ -1279,6 +1320,7 @@ def _runtime_metadata(device: torch.device) -> dict[str, Any]:
     }
 
 
+# ランドマーク種別トークンの初期値と学習後の変化を集計します。
 def _type_token_change_report(
     initial_tokens: Sequence[torch.Tensor],
     model: FingertipDepthStudent,
@@ -1320,6 +1362,7 @@ def _type_token_change_report(
     }
 
 
+# コーパスを使って生徒モデルを学習し、評価結果とチェックポイントを保存します。
 def train_student_transformer(
     *,
     dataset_manifest_path: Path,

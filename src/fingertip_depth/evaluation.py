@@ -1,4 +1,4 @@
-"""Depth statistics and ground-truth evaluation."""
+'深度推定値の統計量を集計し、正解深度との誤差を評価します。'
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import math
 import numpy as np
 
 
+# 有効な深度値の件数、範囲、代表値などの統計を計算します。
 def depth_statistics(depth_m: np.ndarray) -> dict[str, float | int | None]:
     valid = np.isfinite(depth_m) & (depth_m > 0)
     values = depth_m[valid]
@@ -27,6 +28,7 @@ def depth_statistics(depth_m: np.ndarray) -> dict[str, float | int | None]:
     }
 
 
+# 推定深度を正解深度と比較し、誤差と評価指標を返します。
 def evaluate_depth(prediction_m: np.ndarray, target_m: np.ndarray) -> dict[str, float | int]:
     if prediction_m.shape != target_m.shape:
         raise ValueError(

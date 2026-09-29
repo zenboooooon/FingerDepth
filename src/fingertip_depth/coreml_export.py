@@ -1,4 +1,4 @@
-"""Audited Core ML export for fingertip-depth student models."""
+'学習済み手指深度モデルをCore MLへ変換し、変換対象・計算グラフ・出力の整合性を記録して監査可能にします。'
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ TARGET_DEVICE = {
 }
 
 
+# Core MLへ変換する学習済みモデルと、その出所を検証する情報を保持します。
 @dataclass(frozen=True, slots=True)
 class StudentExportSource:
     """Verified checkpoint and reconstructed inference model."""
@@ -61,6 +62,7 @@ class StudentExportSource:
     training_config: StudentTrainingConfig
 
 
+# 学習済み生徒モデルをCore ML変換で扱える入出力形式に包みます。
 class StudentCoreMLWrapper(nn.Module):
     """Expose deployment-friendly raw RGB and normalized landmark inputs.
 
@@ -71,6 +73,7 @@ class StudentCoreMLWrapper(nn.Module):
     either operation.
     """
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(
         self,
         model: FingertipDepthStudent,
@@ -93,6 +96,7 @@ class StudentCoreMLWrapper(nn.Module):
             torch.tensor(tuple(image_std), dtype=torch.float32).view(1, 3, 1, 1),
         )
 
+    # 入力をニューラルネットワークに通し、予測値を返します。
     def forward(
         self,
         image_rgb_0_1: torch.Tensor,
@@ -100,10 +104,11 @@ class StudentCoreMLWrapper(nn.Module):
     ) -> torch.Tensor:
         normalized_image = (image_rgb_0_1 - self.image_mean) / self.image_std
         centered_landmarks = landmarks_xy_0_1 * 2.0 - 1.0
-        # A [batch, 1] output produces one stable Core ML MultiArray feature.
+        # [batch, 1]の出力にすると、Core MLのMultiArray出力が一つに固定されます。
         return self.model(normalized_image, centered_landmarks).unsqueeze(1)
 
 
+# 固定形状の入力を使ってCore ML変換用のグラフをトレースするラッパーです。
 class CoreMLTraceWrapper(StudentCoreMLWrapper):
     """Fixed-batch equivalent that avoids unsupported fused PyTorch operators.
 
@@ -117,6 +122,7 @@ class CoreMLTraceWrapper(StudentCoreMLWrapper):
     IMAGE_TOKEN_COUNT = 197
     FUSION_TOKEN_COUNT = 202
 
+    # 必要な引数を検証し、インスタンスの状態を初期化します。
     def __init__(
         self,
         model: FingertipDepthStudent,
@@ -131,11 +137,12 @@ class CoreMLTraceWrapper(StudentCoreMLWrapper):
         if self.embedding_dim != 384 or self.head_count != 6 or self.head_dim != 64:
             raise ValueError("Core ML MVP requires the trained 384-dim, six-head student")
 
+    # 画像・固定・バッチを指定形式に符号化します。
     def _encode_image_fixed_batch(self, image: torch.Tensor) -> torch.Tensor:
         encoder = self.model.image_encoder
         tokens = encoder.patch_embed(image)
-        # cls_token already has batch dimension 1. Avoiding expand() removes a
-        # dynamic tensor-to-int conversion from the traced graph.
+        # cls_tokenにはすでにバッチ次元があります。expand()を避けることで、トレース時の
+        # Tensorから整数への動的変換を計算グラフに含めずに済みます。
         tokens = torch.cat((encoder.cls_token, tokens), dim=1)
         tokens = encoder.pos_drop(tokens + encoder.pos_embed)
         tokens = encoder.patch_drop(tokens)
@@ -143,6 +150,7 @@ class CoreMLTraceWrapper(StudentCoreMLWrapper):
         tokens = encoder.blocks(tokens)
         return encoder.norm(tokens)
 
+    # Transformer層の自己注意計算を明示的な行列演算で実装し、変換可能なTensor出力を返します。
     def _self_attention(
         self,
         inputs: torch.Tensor,
@@ -171,6 +179,7 @@ class CoreMLTraceWrapper(StudentCoreMLWrapper):
         )
         return F.linear(attended, attention.out_proj.weight, attention.out_proj.bias)
 
+    # 入力をニューラルネットワークに通し、予測値を返します。
     def forward(
         self,
         image_rgb_0_1: torch.Tensor,
@@ -193,6 +202,7 @@ class CoreMLTraceWrapper(StudentCoreMLWrapper):
         return self.model.depth_head(encoded[:, 0]).reshape(1, 1)
 
 
+# 指定したファイルの内容からSHA-256を計算します。
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -201,6 +211,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# JSONファイルを読み込みます。
 def _read_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as source:
         value = json.load(source)
@@ -209,12 +220,14 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+# 値が辞書形式であることを検証します。
 def _require_mapping(value: object, *, field: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{field} must be an object")
     return value
 
 
+# 値が正しい形式のSHA-256であることを検証します。
 def _require_sha256(value: object, *, field: str) -> str:
     digest = str(value).lower()
     if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
@@ -222,6 +235,7 @@ def _require_sha256(value: object, *, field: str) -> str:
     return digest
 
 
+# 成果物の相対パスがマニフェストの基準ディレクトリ内にあり、実ファイルが存在することを確認します。
 def _contained_artifact(root: Path, relative_path: object, *, field: str) -> Path:
     relative = Path(str(relative_path))
     if relative.is_absolute():
@@ -235,17 +249,19 @@ def _contained_artifact(root: Path, relative_path: object, *, field: str) -> Pat
     return path
 
 
+# チェックポイントのモデル設定からStudentModelConfigを復元し、学習済み重みのロード時に事前学習重みを取得しないようにします。
 def _model_config(raw: object) -> StudentModelConfig:
     config = _require_mapping(raw, field="checkpoint.model_config")
     allowed = {field.name for field in fields(StudentModelConfig)}
     values = {name: config[name] for name in allowed if name in config}
-    # Loading a trained state dict must never trigger a network download.
+    # 学習済み重みを復元するときに、ネットワークから重みを取得しないようにします。
     values["pretrained_image_encoder"] = False
     if "landmark_indices" in values:
         values["landmark_indices"] = tuple(int(value) for value in values["landmark_indices"])
     return StudentModelConfig(**values)
 
 
+# チェックポイントの学習設定を検証し、タプル項目を復元してStudentTrainingConfigを作ります。
 def _training_config(raw: object) -> StudentTrainingConfig:
     config = _require_mapping(raw, field="checkpoint.training_config")
     allowed = {field.name for field in fields(StudentTrainingConfig)}
@@ -257,6 +273,7 @@ def _training_config(raw: object) -> StudentTrainingConfig:
     return StudentTrainingConfig(**values)
 
 
+# runマニフェストと最良チェックポイントのハッシュ・形式・データセット参照を検証し、学習済みモデルを復元します。
 def load_student_export_source(run_manifest_path: Path) -> StudentExportSource:
     """Verify the selected training run and reconstruct its best checkpoint."""
 
@@ -335,6 +352,7 @@ def load_student_export_source(run_manifest_path: Path) -> StudentExportSource:
     )
 
 
+# Core ML変換用に、固定バッチ・画像正規化を行うトレースラッパーを作ります。
 def make_coreml_wrapper(source: StudentExportSource) -> CoreMLTraceWrapper:
     return CoreMLTraceWrapper(
         source.model,
@@ -343,6 +361,7 @@ def make_coreml_wrapper(source: StudentExportSource) -> CoreMLTraceWrapper:
     ).eval()
 
 
+# torch.export用に、学習済みモデルと学習時の画像正規化設定を包むラッパーを作ります。
 def make_export_wrapper(source: StudentExportSource) -> StudentCoreMLWrapper:
     """Build the unmodified deployment wrapper used by ``torch.export``."""
 
@@ -353,6 +372,7 @@ def make_export_wrapper(source: StudentExportSource) -> StudentCoreMLWrapper:
     ).eval()
 
 
+# ExportedProgramのグラフに含まれる関数演算子を数え、名前順の辞書で返します。
 def _torch_export_operator_counts(
     exported: torch.export.ExportedProgram,
 ) -> dict[str, int]:
@@ -364,6 +384,7 @@ def _torch_export_operator_counts(
     return dict(sorted(counts.items()))
 
 
+# グラフ形式がATENであることと未対応の融合演算子が残っていないことを確認し、監査情報を返します。
 def _audit_torch_export_graph(
     exported: torch.export.ExportedProgram,
 ) -> dict[str, Any]:
@@ -386,6 +407,7 @@ def _audit_torch_export_graph(
     }
 
 
+# 固定入力で厳密なtorch.exportグラフを生成し、元のPyTorch出力との誤差を確認して保存します。
 def export_student_for_coreml(
     wrapper: nn.Module,
     *,
@@ -444,6 +466,7 @@ def export_student_for_coreml(
     }
 
 
+# 固定形状の推論ラッパーをTorchScriptに変換し、別入力でも元モデルと一致するか検証します。
 def trace_student_for_coreml(
     wrapper: nn.Module,
     *,
@@ -508,6 +531,7 @@ def trace_student_for_coreml(
     }
 
 
+# 指定されたPyTorchラッパーをML Program形式のCore MLモデルへ変換し、入出力名・対応OS・学習元情報を付けて保存します。
 def _convert_to_coreml(
     source_model: Any,
     *,
@@ -583,6 +607,7 @@ def _convert_to_coreml(
     }
 
 
+# TorchScriptモデルを固定入出力のfloat16 Core MLモデルへ変換します。
 def convert_torchscript_to_coreml(
     traced: torch.jit.ScriptModule,
     *,
@@ -603,6 +628,7 @@ def convert_torchscript_to_coreml(
     )
 
 
+# 監査済みATEN ExportedProgramをfloat16 Core MLモデルへ変換します。
 def convert_exported_program_to_coreml(
     exported: torch.export.ExportedProgram,
     *,
@@ -624,15 +650,17 @@ def convert_exported_program_to_coreml(
     )
 
 
+# 軌跡デモの入力検証処理を使い、Core MLとの比較に使う実動画観測を読み込みます。
 def load_parity_observations(run_manifest_path: Path) -> tuple[Any, ...]:
     """Load the exact identity observations used by the existing 2030 demo."""
 
-    # Imported lazily to keep the deployment wrapper independent from demo code.
+    # デプロイ用ラッパーがデモ実装に依存しないよう、ここで遅延インポートします。
     from .student_trajectory_demo import load_demo_inputs
 
     return tuple(load_demo_inputs(run_manifest_path).observations)
 
 
+# 実動画観測からRGB画像・ランドマーク・PyTorch予測をまとめた再現可能な比較用NPZを作ります。
 def build_parity_fixture(
     wrapper: nn.Module,
     observations: Sequence[Any],
@@ -711,6 +739,7 @@ def build_parity_fixture(
     }
 
 
+# 既存比較用NPZの画像とランドマークを再利用し、現在のPyTorchモデルの予測を再計算します。
 def rebuild_parity_fixture(
     wrapper: nn.Module,
     source_fixture_path: Path,
@@ -805,6 +834,7 @@ def rebuild_parity_fixture(
     }
 
 
+# ファイルまたはディレクトリ内の全ファイルをハッシュし、サイズとSHA-256を記録します。
 def artifact_record(path: Path) -> dict[str, Any]:
     path = path.resolve()
     if path.is_file():
@@ -826,6 +856,7 @@ def artifact_record(path: Path) -> dict[str, Any]:
     return {"path": str(path), "sha256": digest, "byte_count": byte_count}
 
 
+# 書出し・マニフェストを書き込みます。
 def write_export_manifest(
     *,
     output_path: Path,

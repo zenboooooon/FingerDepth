@@ -1,4 +1,4 @@
-"""Configuration loading for the video-to-student training pipeline."""
+'TOMLなどの設定ファイルを読み込み、入力動画、保存先、前処理、教師、データセット、学習条件を型付き設定として検証します。'
 
 from __future__ import annotations
 
@@ -25,14 +25,17 @@ DEFAULT_IMAGE_STD = (0.229, 0.224, 0.225)
 TransferMode = Literal["copy", "hardlink"]
 
 
+# 設定で明示されない場合に使うプロジェクト基準ディレクトリを決めます。
 def _default_project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+# 値が真偽値ではない数値型かどうかを判定します。
 def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+# 値を有限の浮動小数点数として検証・変換します。
 def _finite_float(value: object, *, field: str) -> float:
     if not _is_number(value):
         raise TypeError(f"{field} must be a number")
@@ -42,6 +45,7 @@ def _finite_float(value: object, *, field: str) -> float:
     return parsed
 
 
+# 値を正の有限浮動小数点数として検証・変換します。
 def _positive_float(value: object, *, field: str) -> float:
     parsed = _finite_float(value, field=field)
     if parsed <= 0.0:
@@ -49,12 +53,14 @@ def _positive_float(value: object, *, field: str) -> float:
     return parsed
 
 
+# 値が整数として有効か検証し、整数値に変換します。
 def _integer(value: object, *, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"{field} must be an integer")
     return value
 
 
+# 値を正の整数として検証・変換します。
 def _positive_int(value: object, *, field: str) -> int:
     parsed = _integer(value, field=field)
     if parsed <= 0:
@@ -62,12 +68,14 @@ def _positive_int(value: object, *, field: str) -> int:
     return parsed
 
 
+# 未指定を許容し、指定された場合は正の整数として検証します。
 def _optional_positive_int(table: Mapping[str, Any], key: str, *, section: str) -> int | None:
     if key not in table:
         return None
     return _positive_int(table[key], field=f"{section}.{key}")
 
 
+# 真偽値の設定を検証し、Pythonのboolとして返します。
 def _boolean(table: Mapping[str, Any], key: str, default: bool, *, section: str) -> bool:
     value = table.get(key, default)
     if not isinstance(value, bool):
@@ -75,6 +83,7 @@ def _boolean(table: Mapping[str, Any], key: str, default: bool, *, section: str)
     return value
 
 
+# 文字列の設定値を検証して返します。
 def _string(table: Mapping[str, Any], key: str, default: str, *, section: str) -> str:
     value = table.get(key, default)
     if not isinstance(value, str) or not value.strip():
@@ -82,6 +91,7 @@ def _string(table: Mapping[str, Any], key: str, default: str, *, section: str) -
     return value
 
 
+# 設定ファイルの項目がテーブル形式か検証します。
 def _table(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     value = data.get(key, {})
     if not isinstance(value, dict):
@@ -89,6 +99,7 @@ def _table(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value
 
 
+# 設定に許可されていないキーが含まれていないか検証します。
 def _reject_unknown(table: Mapping[str, Any], allowed: set[str], *, section: str) -> None:
     unknown = sorted(set(table) - allowed)
     if unknown:
@@ -96,6 +107,7 @@ def _reject_unknown(table: Mapping[str, Any], allowed: set[str], *, section: str
         raise ValueError(f"unknown {section} setting(s): {joined}")
 
 
+# 相対パスをプロジェクト基準で解決し、絶対パスを返します。
 def _resolve_path(value: object, *, project_root: Path, field: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise TypeError(f"{field} must be a non-empty path string")
@@ -105,6 +117,7 @@ def _resolve_path(value: object, *, project_root: Path, field: str) -> Path:
     return path.resolve()
 
 
+# プロジェクト基準の相対パスであることを検証・整形します。
 def _relative_path(path: Path, project_root: Path) -> str:
     try:
         return path.relative_to(project_root).as_posix()
@@ -112,6 +125,7 @@ def _relative_path(path: Path, project_root: Path) -> str:
         return path.as_posix()
 
 
+# フレーム転送方式が対応する値の一つか検証します。
 def _transfer_mode(
     table: Mapping[str, Any],
     key: str,
@@ -125,6 +139,7 @@ def _transfer_mode(
     return value  # type: ignore[return-value]
 
 
+# 整数の並びを検証してタプルへ変換します。
 def _int_tuple(
     table: Mapping[str, Any],
     key: str,
@@ -141,6 +156,7 @@ def _int_tuple(
     return result
 
 
+# 3要素の有限浮動小数点数として検証・変換します。
 def _float_triplet(
     table: Mapping[str, Any],
     key: str,
@@ -155,16 +171,19 @@ def _float_triplet(
     return parsed  # type: ignore[return-value]
 
 
+# 一動画に限ってパイプライン共通設定を上書きする値を保持します。
 @dataclass(frozen=True, slots=True)
 class VideoOverrideConfig:
     """Per-video values that differ from the pipeline defaults."""
 
     focal_35mm_mm: float
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         _positive_float(self.focal_35mm_mm, field="video override focal_35mm_mm")
 
 
+# 動画などパイプラインの入力場所を保持します。
 @dataclass(frozen=True, slots=True)
 class InputConfig:
     train_dir: Path
@@ -173,6 +192,7 @@ class InputConfig:
     default_focal_35mm_mm: float
     video_overrides: Mapping[Path, VideoOverrideConfig]
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if not self.extensions:
             raise ValueError("input.extensions must not be empty")
@@ -181,6 +201,7 @@ class InputConfig:
         _positive_float(self.default_focal_35mm_mm, field="input.default_focal_35mm_mm")
 
 
+# 前処理、データセット、学習runの保存先を保持します。
 @dataclass(frozen=True, slots=True)
 class OutputConfig:
     processed_dir: Path
@@ -188,6 +209,7 @@ class OutputConfig:
     runs_dir: Path
 
 
+# フレーム抽出と手ランドマーク検出の条件を保持します。
 @dataclass(frozen=True, slots=True)
 class PrepareConfig:
     hand_model_path: Path
@@ -195,6 +217,7 @@ class PrepareConfig:
     frame_transfer_mode: TransferMode = "hardlink"
     max_frames: int | None = None
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if not self.landmark_indices or len(set(self.landmark_indices)) != len(
             self.landmark_indices
@@ -208,6 +231,7 @@ class PrepareConfig:
             raise ValueError("prepare.max_frames must be positive")
 
 
+# 教師モデル、実行環境、疑似ラベル対象の選択条件を保持します。
 @dataclass(frozen=True, slots=True)
 class TeacherConfig:
     depth_pro_project: Path
@@ -217,6 +241,7 @@ class TeacherConfig:
     checkpoint_interval_frames: int = 100
     teacher_selection_report: Path | None = None
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if not self.device:
             raise ValueError("teacher.device must not be empty")
@@ -232,11 +257,13 @@ class TeacherConfig:
             raise ValueError("teacher.checkpoint_interval_frames must be positive")
 
 
+# データセットの統合、分割、左右反転に関する条件を保持します。
 @dataclass(frozen=True, slots=True)
 class DatasetConfig:
     frame_transfer_mode: TransferMode = "hardlink"
     validation_tail_fraction: float | None = None
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if self.frame_transfer_mode not in {"copy", "hardlink"}:
             raise ValueError("dataset.frame_transfer_mode must be copy or hardlink")
@@ -246,6 +273,7 @@ class DatasetConfig:
             raise ValueError("dataset.validation_tail_fraction must be in (0, 1)")
 
 
+# 生徒モデルの構造と入力形式の設定です。
 @dataclass(frozen=True, slots=True)
 class StudentModelSettings:
     image_encoder_name: str = "vit_small_patch16_224.dino"
@@ -256,6 +284,7 @@ class StudentModelSettings:
     fusion_mlp_ratio: float = 4.0
     dropout: float = 0.1
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if not self.image_encoder_name:
             raise ValueError("training.model.image_encoder_name must not be empty")
@@ -273,6 +302,7 @@ class StudentModelSettings:
             raise ValueError("training.model.dropout must be in [0, 1)")
 
 
+# 最適化器、学習率、重み減衰などの設定です。
 @dataclass(frozen=True, slots=True)
 class StudentOptimizerSettings:
     epochs: int = 20
@@ -293,6 +323,7 @@ class StudentOptimizerSettings:
     preload_images: bool = True
     verify_image_png_sha256: bool = True
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if self.epochs <= 0 or self.batch_size <= 0:
             raise ValueError("training optimizer epochs and batch_size must be positive")
@@ -314,6 +345,7 @@ class StudentOptimizerSettings:
             raise ValueError("training.optimizer.precision must be float32 or bfloat16")
 
 
+# 教師深度のスパイクを検出・除外する設定です。
 @dataclass(frozen=True, slots=True)
 class SpikeFilterSettings:
     enabled: bool = True
@@ -325,6 +357,7 @@ class SpikeFilterSettings:
     mad_multiplier: float = 6.0
     mad_scale: float = 1.4826
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if self.frame_radius <= 0 or self.max_frame_gap <= 0:
             raise ValueError("training spike-filter radii must be positive")
@@ -340,6 +373,7 @@ class SpikeFilterSettings:
             raise ValueError("training spike-filter thresholds must be finite and positive")
 
 
+# モデル、最適化、学習回数、評価に関する設定をまとめます。
 @dataclass(frozen=True, slots=True)
 class TrainingConfig:
     device: str
@@ -347,10 +381,12 @@ class TrainingConfig:
     optimizer: StudentOptimizerSettings
     spike_filter: SpikeFilterSettings
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if not self.device:
             raise ValueError("training.device must not be empty")
 
+    # 設定値からStudentModelConfigを作成して返します。
     def model_config(self) -> StudentModelConfig:
         """Convert the loaded values to the existing model configuration."""
 
@@ -358,6 +394,7 @@ class TrainingConfig:
 
         return StudentModelConfig(**asdict(self.model))
 
+    # 設定値からStudentTrainingConfigを作成して返します。
     def training_config(self) -> StudentTrainingConfig:
         """Convert the loaded values to the existing optimizer configuration."""
 
@@ -365,6 +402,7 @@ class TrainingConfig:
 
         return StudentTrainingConfig(**asdict(self.optimizer))
 
+    # 設定値からTeacherSpikeFilterConfigを作成して返します。
     def spike_filter_config(self) -> TeacherSpikeFilterConfig:
         """Convert the loaded values to the existing teacher-spike configuration."""
 
@@ -373,6 +411,7 @@ class TrainingConfig:
         return TeacherSpikeFilterConfig(**asdict(self.spike_filter))
 
 
+# 動画探索から学習までの設定とプロジェクト基準パスをまとめます。
 @dataclass(frozen=True, slots=True)
 class PipelineConfig:
     project_root: Path
@@ -384,6 +423,7 @@ class PipelineConfig:
     dataset: DatasetConfig
     training: TrainingConfig
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if self.input.train_dir == self.input.validation_dir:
             raise ValueError("input train and validation directories must be different")
@@ -409,6 +449,7 @@ class PipelineConfig:
                 f"missing {missing_landmarks}"
             )
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, Any]:
         """Return a deterministic, project-relative payload suitable for hashing."""
 
@@ -468,12 +509,14 @@ class PipelineConfig:
             },
         }
 
+    # キャッシュキーに使う設定項目だけを安定した辞書にまとめます。
     def fingerprint_dict(self) -> dict[str, Any]:
         """Alias with an explicit name for callers constructing a content fingerprint."""
 
         return self.as_dict()
 
 
+# 入力テーブルを検証し、動画ディレクトリなどのInputConfigを作ります。
 def _load_input(
     table: Mapping[str, Any],
     overrides_table: Mapping[str, Any],
@@ -554,6 +597,7 @@ def _load_input(
     )
 
 
+# 出力テーブルを検証し、各成果物の保存先を解決したOutputConfigを作ります。
 def _load_output(table: Mapping[str, Any], *, project_root: Path) -> OutputConfig:
     _reject_unknown(
         table,
@@ -579,6 +623,7 @@ def _load_output(table: Mapping[str, Any], *, project_root: Path) -> OutputConfi
     )
 
 
+# 前処理テーブルから手モデル、ランドマーク、フレーム上限などのPrepareConfigを作ります。
 def _load_prepare(table: Mapping[str, Any], *, project_root: Path) -> PrepareConfig:
     _reject_unknown(
         table,
@@ -607,6 +652,7 @@ def _load_prepare(table: Mapping[str, Any], *, project_root: Path) -> PrepareCon
     )
 
 
+# 教師テーブルからDepth Pro環境、実行デバイス、選択レポートなどのTeacherConfigを作ります。
 def _load_teacher(table: Mapping[str, Any], *, project_root: Path) -> TeacherConfig:
     _reject_unknown(
         table,
@@ -652,6 +698,7 @@ def _load_teacher(table: Mapping[str, Any], *, project_root: Path) -> TeacherCon
     )
 
 
+# データセットテーブルから統合・分割・反転条件のDatasetConfigを作ります。
 def _load_dataset(table: Mapping[str, Any]) -> DatasetConfig:
     _reject_unknown(
         table,
@@ -675,6 +722,7 @@ def _load_dataset(table: Mapping[str, Any]) -> DatasetConfig:
     )
 
 
+# モデルテーブルからViTとランドマークTransformerのStudentModelSettingsを作ります。
 def _load_model(table: Mapping[str, Any]) -> StudentModelSettings:
     _reject_unknown(
         table,
@@ -722,6 +770,7 @@ def _load_model(table: Mapping[str, Any]) -> StudentModelSettings:
     )
 
 
+# 最適化テーブルから学習率、バッチサイズ、エポックなどの設定を作ります。
 def _load_optimizer(table: Mapping[str, Any]) -> StudentOptimizerSettings:
     allowed = {
         "epochs",
@@ -813,6 +862,7 @@ def _load_optimizer(table: Mapping[str, Any]) -> StudentOptimizerSettings:
     )
 
 
+# スパイク除外テーブルを検証し、教師深度の外れ値除外設定を作ります。
 def _load_spike_filter(table: Mapping[str, Any]) -> SpikeFilterSettings:
     allowed = {
         "enabled",
@@ -854,6 +904,7 @@ def _load_spike_filter(table: Mapping[str, Any]) -> SpikeFilterSettings:
     )
 
 
+# 学習テーブルを検証し、モデル・最適化・評価条件をまとめたTrainingConfigを作ります。
 def _load_training(table: Mapping[str, Any]) -> TrainingConfig:
     _reject_unknown(table, {"device", "model", "optimizer", "spike_filter"}, section="training")
     return TrainingConfig(
@@ -864,6 +915,7 @@ def _load_training(table: Mapping[str, Any]) -> TrainingConfig:
     )
 
 
+# TOML設定ファイルを読み、各工程の型付き設定を構築します。
 def load_pipeline_config(
     path: str | Path,
     *,

@@ -1,9 +1,7 @@
-"""Evaluation helpers for the supplied iPhone Phase 1/2 samples."""
+'深度モデルに依存しない実験補助処理をまとめます。焦点距離の換算、手指周辺領域の抽出、時系列の連続区間や変化量の集計を担当します。'
 
 from __future__ import annotations
 
-import csv
-import hashlib
 import json
 import math
 from itertools import pairwise
@@ -13,30 +11,10 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .artifacts import depth_preview_bgr, write_json
-from .camera import CameraIntrinsics
-from .constants import (
-    METRIC3D_CANONICAL_FOCAL_PX,
-    METRIC3D_HUB_MODEL,
-    METRIC3D_HUB_REPO,
-    METRIC3D_INPUT_HEIGHT,
-    METRIC3D_INPUT_WIDTH,
-)
-from .image_io import read_bgr
-from .metric3d import Metric3Dv2, verify_cached_checkpoint
-from .pipeline import run_video
-
 _FULL_FRAME_DIAGONAL_MM = math.hypot(36.0, 24.0)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
+# 35mm判換算の焦点距離と画像寸法からピクセル単位の焦点距離を求めます。
 def focal_px_from_35mm_equivalent(
     *,
     width: int,
@@ -52,36 +30,7 @@ def focal_px_from_35mm_equivalent(
     return focal_35mm_mm * math.hypot(width, height) / _FULL_FRAME_DIAGONAL_MM
 
 
-def metric3d_scale_audit(
-    *,
-    width: int,
-    height: int,
-    focal_px: float,
-) -> dict[str, Any]:
-    """Describe the single canonical-to-metric conversion used by Metric3D."""
-
-    if width <= 0 or height <= 0:
-        raise ValueError("image dimensions must be positive")
-    if not math.isfinite(focal_px) or focal_px <= 0:
-        raise ValueError("focal_px must be finite and positive")
-    resize_scale = min(
-        METRIC3D_INPUT_HEIGHT / height,
-        METRIC3D_INPUT_WIDTH / width,
-    )
-    resized_focal_px = focal_px * resize_scale
-    return {
-        "input_size_px": {"width": width, "height": height},
-        "original_fx_px": focal_px,
-        "resize_scale": resize_scale,
-        "resized_fx_px": resized_focal_px,
-        "canonical_focal_px": METRIC3D_CANONICAL_FOCAL_PX,
-        "canonical_to_metric_factor": resized_focal_px / METRIC3D_CANONICAL_FOCAL_PX,
-        "formula": ("D_metric = D_canonical * (fx_original_px * resize_scale / 1000)"),
-        "conversion_implementation": "restore_metric_depth",
-        "conversion_application_count": 1,
-    }
-
-
+# 緑色の矩形領域を画像から検出し、切り出し範囲を返します。
 def extract_green_box_roi(bgr: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]]:
     """Extract the central green box without consulting predicted depth."""
 
@@ -91,8 +40,8 @@ def extract_green_box_roi(bgr: np.ndarray) -> tuple[np.ndarray, tuple[int, int, 
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     candidate = cv2.inRange(hsv, (35, 55, 20), (100, 255, 255))
 
-    # The target was intentionally photographed near the horizontal centre and
-    # below 35% image height. This rejects unrelated green pixels deterministically.
+    # 対象物は意図的に画像の中央付近かつ高さ35%より下に撮影されています。
+    # この位置条件で無関係な緑色領域を一定の基準で除外します。
     candidate[: round(height * 0.35), :] = 0
     candidate[:, : round(width * 0.25)] = 0
     candidate[:, round(width * 0.75) :] = 0
@@ -138,6 +87,7 @@ def extract_green_box_roi(bgr: np.ndarray) -> tuple[np.ndarray, tuple[int, int, 
     return roi.astype(bool), (x, y, box_width, box_height)
 
 
+# 関心領域内の深度値を集計し、距離の統計を返します。
 def roi_depth_statistics(depth_m: np.ndarray, roi: np.ndarray) -> dict[str, float | int]:
     """Return robust depth statistics within a boolean ROI."""
 
@@ -165,250 +115,14 @@ def roi_depth_statistics(depth_m: np.ndarray, roi: np.ndarray) -> dict[str, floa
     }
 
 
+# 画像を指定パスへ保存し、書き込み失敗を検出します。
 def _write_image(path: Path, image: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(path), image):
         raise OSError(f"failed to write image: {path}")
 
 
-def _annotate_box(
-    bgr: np.ndarray,
-    *,
-    bbox: tuple[int, int, int, int],
-    actual_m: float,
-    predicted_m: float,
-) -> np.ndarray:
-    annotated = bgr.copy()
-    x, y, width, height = bbox
-    thickness = max(3, round(min(bgr.shape[:2]) / 700))
-    cv2.rectangle(
-        annotated,
-        (x, y),
-        (x + width - 1, y + height - 1),
-        (0, 255, 255),
-        thickness,
-    )
-    label = f"GT {actual_m:.1f} m | Metric3D ROI median {predicted_m:.3f} m"
-    origin = (max(20, x), max(80, y - 30))
-    font_scale = max(0.9, min(bgr.shape[:2]) / 2200)
-    cv2.putText(
-        annotated,
-        label,
-        origin,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
-        (0, 0, 0),
-        thickness + 4,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        annotated,
-        label,
-        origin,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
-        (0, 255, 255),
-        thickness,
-        cv2.LINE_AA,
-    )
-    return annotated
-
-
-def evaluate_known_distance_images(
-    *,
-    samples: list[tuple[Path, float]],
-    output_dir: Path,
-    focal_35mm_mm: float = 26.0,
-    device: str = "auto",
-) -> dict[str, Any]:
-    """Run Metric3D once per known-distance image and evaluate the green box."""
-
-    if not samples:
-        raise ValueError("at least one known-distance sample is required")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    model = Metric3Dv2(device=device)
-    rows: list[dict[str, Any]] = []
-    expected_shape: tuple[int, int] | None = None
-    focal_px: float | None = None
-
-    for input_path, actual_m in samples:
-        bgr = read_bgr(input_path)
-        if bgr is None:
-            raise ValueError(f"input is not a readable image: {input_path}")
-        height, width = bgr.shape[:2]
-        if expected_shape is None:
-            expected_shape = (height, width)
-            focal_px = focal_px_from_35mm_equivalent(
-                width=width,
-                height=height,
-                focal_35mm_mm=focal_35mm_mm,
-            )
-        elif (height, width) != expected_shape:
-            raise ValueError(
-                f"known-distance image dimensions differ: {(height, width)} vs {expected_shape}"
-            )
-        assert focal_px is not None
-        intrinsics = CameraIntrinsics.centered(
-            width=width,
-            height=height,
-            fx_px=focal_px,
-        )
-        prediction = model.predict(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), intrinsics)
-        roi, bbox = extract_green_box_roi(bgr)
-        stats = roi_depth_statistics(prediction.depth_m, roi)
-        predicted_m = float(stats["median_m"])
-        signed_error_m = predicted_m - actual_m
-        sample_dir = output_dir / input_path.stem
-        sample_dir.mkdir(parents=True, exist_ok=True)
-        np.save(sample_dir / "depth_m.npy", prediction.depth_m)
-        _write_image(sample_dir / "box_mask.png", roi.astype(np.uint8) * 255)
-        _write_image(
-            sample_dir / "roi_overlay.jpg",
-            _annotate_box(
-                bgr,
-                bbox=bbox,
-                actual_m=actual_m,
-                predicted_m=predicted_m,
-            ),
-        )
-        preview = depth_preview_bgr(prediction.depth_m)
-        x, y, box_width, box_height = bbox
-        cv2.rectangle(
-            preview,
-            (x, y),
-            (x + box_width - 1, y + box_height - 1),
-            (255, 255, 255),
-            max(3, round(min(bgr.shape[:2]) / 700)),
-        )
-        _write_image(sample_dir / "depth_preview.png", preview)
-
-        row: dict[str, Any] = {
-            "source": str(input_path.resolve()),
-            "source_sha256": _sha256(input_path),
-            "actual_distance_m": actual_m,
-            "predicted_depth_m": predicted_m,
-            "signed_error_m": signed_error_m,
-            "absolute_error_m": abs(signed_error_m),
-            "absolute_relative_error": abs(signed_error_m) / actual_m,
-            "focal_sensitivity_minus_2_percent_m": predicted_m * 0.98,
-            "focal_sensitivity_plus_2_percent_m": predicted_m * 1.02,
-            "bbox_xywh": list(bbox),
-            "roi_depth": stats,
-            "depth_inference_ms": prediction.inference_ms,
-            "camera_intrinsics": intrinsics.as_dict(),
-            "intrinsics_source": "EXIF 35mm-equivalent diagonal-FOV approximation",
-        }
-        write_json(sample_dir / "result.json", row)
-        rows.append(row)
-    assert expected_shape is not None
-    assert focal_px is not None
-
-    actual = np.asarray([row["actual_distance_m"] for row in rows], dtype=np.float64)
-    predicted = np.asarray([row["predicted_depth_m"] for row in rows], dtype=np.float64)
-    error = predicted - actual
-    slope, intercept = np.polyfit(actual, predicted, 1)
-    fitted = slope * actual + intercept
-    residual_sum = float(np.sum(np.square(predicted - fitted)))
-    total_sum = float(np.sum(np.square(predicted - np.mean(predicted))))
-    scale_through_origin = float(np.dot(actual, predicted) / np.dot(actual, actual))
-    predicted_ranks = np.argsort(np.argsort(predicted))
-    actual_ranks = np.argsort(np.argsort(actual))
-    monotonic = bool(np.all(np.diff(predicted) > 0))
-    box_widths = np.asarray([row["bbox_xywh"][2] for row in rows], dtype=np.float64)
-    box_heights = np.asarray([row["bbox_xywh"][3] for row in rows], dtype=np.float64)
-    width_distance_product = box_widths * actual
-    height_distance_product = box_heights * actual
-    aggregate = {
-        "sample_count": len(rows),
-        "mae_m": float(np.mean(np.abs(error))),
-        "rmse_m": float(np.sqrt(np.mean(np.square(error)))),
-        "mean_bias_m": float(np.mean(error)),
-        "mean_absolute_relative_error": float(np.mean(np.abs(error) / actual)),
-        "max_absolute_error_m": float(np.max(np.abs(error))),
-        "pearson_r": float(np.corrcoef(actual, predicted)[0, 1]),
-        "spearman_r": float(np.corrcoef(actual_ranks, predicted_ranks)[0, 1]),
-        "strictly_monotonic_increasing": monotonic,
-        "linear_fit_predicted_from_actual": {
-            "slope": float(slope),
-            "intercept_m": float(intercept),
-            "r_squared": 1.0 - residual_sum / total_sum if total_sum > 0 else 1.0,
-        },
-        "diagnostic_scale_fit_through_origin": scale_through_origin,
-        "scale_fit_applied_to_reported_predictions": False,
-        "input_perspective_sanity": {
-            "box_width_times_distance_px_m": width_distance_product.tolist(),
-            "box_height_times_distance_px_m": height_distance_product.tolist(),
-            "box_width_times_distance_cv": float(
-                np.std(width_distance_product) / np.mean(width_distance_product)
-            ),
-            "box_height_times_distance_cv": float(
-                np.std(height_distance_product) / np.mean(height_distance_product)
-            ),
-            "box_width_vs_inverse_distance_pearson_r": float(
-                np.corrcoef(box_widths, 1.0 / actual)[0, 1]
-            ),
-        },
-    }
-    summary: dict[str, Any] = {
-        "experiment": "Phase 1 known-distance green-box test",
-        "focal_35mm_equivalent_mm": focal_35mm_mm,
-        "depth_model": {
-            "family": "Metric3D v2",
-            "hub_model": METRIC3D_HUB_MODEL,
-            "hub_repo": METRIC3D_HUB_REPO,
-            "checkpoint_sha256": verify_cached_checkpoint(),
-        },
-        "device": str(model.device),
-        "focal_px": focal_px,
-        "metric3d_scale_conversion": metric3d_scale_audit(
-            width=expected_shape[1],
-            height=expected_shape[0],
-            focal_px=focal_px,
-        ),
-        "intrinsics_source": "EXIF 35mm-equivalent diagonal-FOV approximation; not calibrated K",
-        "representative_depth": "median finite positive Metric3D depth inside eroded green-box ROI",
-        "roi_method": (
-            "fixed HSV H=35..100,S>=55,V>=20; central/lower spatial gate; "
-            "1% closing; largest component exterior fill; 10% short-side erosion"
-        ),
-        "rows": rows,
-        "aggregate": aggregate,
-    }
-    write_json(output_dir / "summary.json", summary)
-
-    with (output_dir / "results.csv").open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(
-            [
-                "image",
-                "actual_m",
-                "predicted_m",
-                "signed_error_m",
-                "absolute_error_m",
-                "absolute_relative_error",
-                "roi_p25_m",
-                "roi_p75_m",
-                "inference_ms",
-            ]
-        )
-        for row in rows:
-            roi_stats = row["roi_depth"]
-            writer.writerow(
-                [
-                    Path(row["source"]).name,
-                    row["actual_distance_m"],
-                    row["predicted_depth_m"],
-                    row["signed_error_m"],
-                    row["absolute_error_m"],
-                    row["absolute_relative_error"],
-                    roi_stats["p25_m"],
-                    roi_stats["p75_m"],
-                    row["depth_inference_ms"],
-                ]
-            )
-    return summary
-
-
+# 指先の深度・座標が有効な時系列行を抽出します。
 def _valid_fingertip_rows(records_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     valid: list[dict[str, Any]] = []
@@ -436,6 +150,7 @@ def _valid_fingertip_rows(records_path: Path) -> tuple[list[dict[str, Any]], lis
     return records, valid
 
 
+# 隣接するフレーム番号を連続区間にまとめます。
 def _contiguous_runs(valid: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     runs: list[list[dict[str, Any]]] = []
     for row in valid:
@@ -446,6 +161,7 @@ def _contiguous_runs(valid: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     return runs
 
 
+# 欠落フレーム番号を連続区間ごとにまとめます。
 def _missing_runs(
     *,
     total_frames: int,
@@ -470,6 +186,7 @@ def _missing_runs(
     return runs
 
 
+# 隣接フレーム間の移動差分について統計を計算します。
 def _delta_statistics(values: list[float] | np.ndarray) -> dict[str, float | int | None]:
     array = np.asarray(values, dtype=np.float64)
     if array.size == 0:
@@ -493,6 +210,7 @@ def _delta_statistics(values: list[float] | np.ndarray) -> dict[str, float | int
     }
 
 
+# 指先の時系列位置から移動量、欠落区間、連続区間を要約します。
 def summarize_fingertip_movement(records_path: Path) -> dict[str, Any]:
     """Summarize valid single-pixel fingertip depth without bridging gaps."""
 
@@ -641,6 +359,7 @@ def summarize_fingertip_movement(records_path: Path) -> dict[str, Any]:
     return summary
 
 
+# 指先深度の時系列をグラフとして保存します。
 def write_fingertip_depth_chart(
     *,
     records_path: Path,
@@ -678,6 +397,7 @@ def write_fingertip_depth_chart(
     if y_max <= y_min:
         y_max = y_min + 0.1
 
+    # 時刻と深度をグラフの描画領域内の整数ピクセル座標へ変換します。
     def point(row: dict[str, Any]) -> tuple[int, int]:
         time_s = row["timestamp_ms"] / 1000.0
         x = left + round(time_s / time_axis_max * plot_width)
@@ -727,7 +447,7 @@ def write_fingertip_depth_chart(
         )
     cv2.putText(
         canvas,
-        "Phase 2: INDEX_FINGER_TIP single-pixel Metric3D depth",
+        "Phase 2: INDEX_FINGER_TIP single-pixel depth",
         (left, 45),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.05,
@@ -756,67 +476,3 @@ def write_fingertip_depth_chart(
         cv2.LINE_AA,
     )
     _write_image(output_path, canvas)
-
-
-def evaluate_finger_movement_video(
-    *,
-    input_path: Path,
-    output_dir: Path,
-    hand_model_path: Path,
-    focal_35mm_mm: float = 36.0,
-    device: str = "auto",
-    max_frames: int | None = None,
-) -> dict[str, Any]:
-    """Run Phase 2 and add continuity statistics for the supplied movement video."""
-
-    capture = cv2.VideoCapture(str(input_path))
-    try:
-        if not capture.isOpened():
-            raise ValueError(f"input is not a readable video: {input_path}")
-        width = round(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    finally:
-        capture.release()
-    focal_px = focal_px_from_35mm_equivalent(
-        width=width,
-        height=height,
-        focal_35mm_mm=focal_35mm_mm,
-    )
-    phase2_summary = run_video(
-        phase=2,
-        input_path=input_path,
-        output_dir=output_dir,
-        fx_px=focal_px,
-        fy_px=focal_px,
-        device=device,
-        frame_step=1,
-        max_frames=max_frames,
-        save_depth_frames=False,
-        hand_model_path=hand_model_path,
-    )
-    movement = summarize_fingertip_movement(output_dir / "frames.jsonl")
-    write_fingertip_depth_chart(
-        records_path=output_dir / "frames.jsonl",
-        output_path=output_dir / "fingertip_depth_timeseries.png",
-    )
-    depth_model = dict(phase2_summary["depth_model"])
-    depth_model["checkpoint_sha256"] = verify_cached_checkpoint()
-    summary = {
-        **phase2_summary,
-        "depth_model": depth_model,
-        "focal_35mm_equivalent_mm": focal_35mm_mm,
-        "source_sha256": _sha256(input_path),
-        "focal_px": focal_px,
-        "metric3d_scale_conversion": metric3d_scale_audit(
-            width=width,
-            height=height,
-            focal_px=focal_px,
-        ),
-        "intrinsics_source": (
-            "user-supplied 35mm-equivalent diagonal-FOV approximation; not calibrated K; "
-            "video stabilization/crop may add scale error"
-        ),
-        "movement_evaluation": movement,
-    }
-    write_json(output_dir / "summary.json", summary)
-    return summary

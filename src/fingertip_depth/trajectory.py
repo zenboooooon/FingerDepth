@@ -1,4 +1,4 @@
-"""Camera-coordinate fingertip trajectory records and portable artifacts."""
+'カメラ座標系の指先位置を時系列データとして保持し、軌跡の要約や図表・機械可読ファイルへの出力を支援します。'
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import numpy as np
 from .geometry import CAMERA_COORDINATE_CONVENTION, CameraPoint3D
 
 
+# 時刻とカメラ座標系の指先位置からなる軌跡の一点です。
 @dataclass(frozen=True, slots=True)
 class TrajectoryPoint:
     """One valid fingertip observation in a camera-coordinate trajectory."""
@@ -27,6 +28,7 @@ class TrajectoryPoint:
     y_m: float
     z_m: float
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         if self.frame_index < 0:
             raise ValueError("frame_index must not be negative")
@@ -40,6 +42,7 @@ class TrajectoryPoint:
         if self.z_m <= 0.0:
             raise ValueError("trajectory z_m must be positive")
 
+    # カメラ座標の三次元点を、フレーム番号・時刻・画素位置付きの軌跡点に変換します。
     @classmethod
     def from_camera_point(
         cls,
@@ -60,14 +63,17 @@ class TrajectoryPoint:
             z_m=point.z_m,
         )
 
+    # 軌跡点のX・Y・Z値からCameraPoint3Dを再構成して返します。
     @property
     def camera_point(self) -> CameraPoint3D:
         return CameraPoint3D(self.x_m, self.y_m, self.z_m)
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, int | float]:
         return asdict(self)
 
 
+# 時系列データを系列IDなどの境界ごとの連続区間に分割します。
 def contiguous_segments(
     points: Sequence[TrajectoryPoint],
     *,
@@ -101,6 +107,7 @@ def contiguous_segments(
     return segments
 
 
+# 連続区間ごとに軌跡のグループ番号を割り当てます。
 def _segment_assignments(
     points: Sequence[TrajectoryPoint],
     *,
@@ -121,6 +128,7 @@ def _segment_assignments(
     return segments, assignments
 
 
+# 三次元軌跡の各点をCSV形式で保存します。
 def write_trajectory_csv(
     path: Path,
     points: Sequence[TrajectoryPoint],
@@ -168,6 +176,7 @@ def write_trajectory_csv(
             )
 
 
+# 三次元軌跡を点群ビューアーで読めるPLY形式で保存します。
 def write_trajectory_ply(
     path: Path,
     points: Sequence[TrajectoryPoint],
@@ -204,6 +213,7 @@ def write_trajectory_ply(
             target.write(f"{start} {end}\n")
 
 
+# 三次元座標を軌跡図のパネル上の画素座標へ変換します。
 def _project_to_panel(
     values: np.ndarray,
     *,
@@ -227,6 +237,7 @@ def _project_to_panel(
     return np.rint(np.column_stack((x, y))).astype(np.int32)
 
 
+# 複数方向から見た軌跡図をPNG画像として保存します。
 def write_trajectory_views_png(
     path: Path,
     points: Sequence[TrajectoryPoint],

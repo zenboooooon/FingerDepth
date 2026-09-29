@@ -1,4 +1,4 @@
-"""Lossless, hash-verified video frames shared across incompatible runtimes."""
+'動画を一度だけデコードして可逆なフレーム画像として保存し、動画・画素のハッシュと件数を使ってキャッシュの完全性を検証します。'
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from .artifacts import write_json
 _FORMAT_VERSION = 1
 
 
+# 指定したファイルの内容からSHA-256を計算します。
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -27,12 +28,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# 画像配列の画素値を正規化してSHA-256を計算します。
 def pixel_sha256(bgr: np.ndarray) -> str:
     if bgr.ndim != 3 or bgr.shape[2] != 3 or bgr.dtype != np.uint8:
         raise ValueError("cached video frame must be uint8 BGR with shape (H, W, 3)")
     return hashlib.sha256(np.ascontiguousarray(bgr).tobytes()).hexdigest()
 
 
+# フレームごとの画素ハッシュを順番に結合したSHA-256を計算します。
 def pixel_hash_sequence_sha256(digests: Iterable[str]) -> str:
     """Hash ordered pixel digests using the model-comparison audit encoding."""
 
@@ -50,6 +53,7 @@ def pixel_hash_sequence_sha256(digests: Iterable[str]) -> str:
     return sequence.hexdigest()
 
 
+# 基準手法の記録ファイルを読み込み、比較対象レコードを返します。
 def _baseline_records(path: Path, expected_sha256: str) -> list[dict[str, Any]]:
     observed = sha256_file(path)
     if observed != expected_sha256:
@@ -69,6 +73,7 @@ def _baseline_records(path: Path, expected_sha256: str) -> list[dict[str, Any]]:
     return records
 
 
+# 動画を読み込み、フレーム画像・時刻・ハッシュを持つキャッシュを作成します。
 def create_video_frame_cache(
     *,
     input_path: Path,
@@ -186,12 +191,14 @@ def create_video_frame_cache(
     return manifest_path
 
 
+# 動画のデコード済みフレームを管理し、読出しと完全性検証を行います。
 @dataclass(frozen=True, slots=True)
 class VideoFrameCache:
     manifest_path: Path
     manifest: dict[str, Any]
     manifest_sha256: str
 
+    # キャッシュのマニフェストを読み、動画・フレーム情報を検証して開きます。
     @classmethod
     def load(
         cls,
@@ -235,18 +242,22 @@ class VideoFrameCache:
             manifest_sha256=observed_manifest_sha256,
         )
 
+    # 元動画のフレームレートをキャッシュ情報から返します。
     @property
     def fps(self) -> float:
         return float(self.manifest["fps"])
 
+    # キャッシュに記録されたフレーム総数を返します。
     @property
     def frame_count(self) -> int:
         return int(self.manifest["frame_count"])
 
+    # 元動画を展開したデコーダーの識別情報を返します。
     @property
     def source_decoder(self) -> dict[str, Any]:
         return dict(self.manifest["source_decoder"])
 
+    # 指定フレームを読み込み、画素ハッシュと寸法を照合して返します。
     def read(self, index: int) -> tuple[np.ndarray, str]:
         if not 0 <= index < self.frame_count:
             raise IndexError(f"cached frame index out of range: {index}")
@@ -267,6 +278,7 @@ class VideoFrameCache:
             raise ValueError(f"cached BGR pixel SHA-256 mismatch at frame {index}")
         return bgr, observed_pixels
 
+    # キャッシュ内の全フレームを読み直し、記録済みハッシュと一致するか検証します。
     def verify_all(self) -> None:
         for index in range(self.frame_count):
             self.read(index)

@@ -1,10 +1,4 @@
-"""Fair, camera-condition-controlled comparisons of monocular depth models.
-
-The comparison code deliberately receives an already constructed estimator.  This
-keeps model downloads and optional dependency environments outside the experiment
-logic, while making the experiment itself straightforward to test without loading
-large checkpoints.
-"""
+'カメラ条件と入力領域を揃えた上で、複数の単眼深度モデルを比較し、推定結果・誤差・可視化を保存します。\n\n比較処理は構築済みの推定器を受け取るため、重みのダウンロードや依存環境の準備と実験ロジックを分離できます。'
 
 from __future__ import annotations
 
@@ -26,7 +20,7 @@ from .camera import CameraIntrinsics
 from .coordinates import lookup_depth
 from .evaluation import depth_statistics
 from .image_io import read_bgr
-from .sample_experiment import (
+from .experiment_utils import (
     extract_green_box_roi,
     focal_px_from_35mm_equivalent,
     roi_depth_statistics,
@@ -52,6 +46,7 @@ _CONDITION_DEFINITIONS: dict[str, tuple[str, CameraMode]] = {
 }
 
 
+# モデル間で共通にするカメラ条件や入力領域を表します。
 @dataclass(frozen=True, slots=True)
 class ComparisonCondition:
     """One of the four pre-registered alternative-model conditions."""
@@ -61,6 +56,7 @@ class ComparisonCondition:
     camera_mode: CameraMode
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
         expected = _CONDITION_DEFINITIONS.get(self.id)
         if expected is None:
@@ -71,6 +67,7 @@ class ComparisonCondition:
                 f"{(self.model_family, self.camera_mode)}"
             )
 
+    # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -80,6 +77,7 @@ class ComparisonCondition:
         }
 
 
+# 比較条件の引数を検証し、条件オブジェクトを作成します。
 def comparison_condition(condition_id: ConditionId) -> ComparisonCondition:
     """Construct a validated condition from its stable experiment identifier."""
 
@@ -91,6 +89,7 @@ def comparison_condition(condition_id: ConditionId) -> ComparisonCondition:
     )
 
 
+# 比較処理が深度予測結果から参照する値の契約を表します。
 @runtime_checkable
 class PredictionLike(Protocol):
     depth_m: np.ndarray
@@ -98,10 +97,12 @@ class PredictionLike(Protocol):
     device: str
 
 
+# 比較対象の深度モデルに必要な推論・モデル情報取得の契約です。
 @runtime_checkable
 class DepthEstimator(Protocol):
     """Structural interface implemented by the UniDepth and Depth Pro adapters."""
 
+    # 入力からモデルの深度予測を計算し、値と推論情報を返します。
     def predict(
         self,
         rgb: np.ndarray,
@@ -111,6 +112,7 @@ class DepthEstimator(Protocol):
     ) -> PredictionLike: ...
 
 
+# 指定したファイルの内容からSHA-256を計算します。
 def sha256_file(path: Path) -> str:
     """Return the lower-case SHA-256 digest of a file."""
 
@@ -121,6 +123,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# NumPy値や配列などをJSONへ保存できるPython値に変換します。
 def _json_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
@@ -132,8 +135,8 @@ def _json_value(value: Any) -> Any:
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
-    # Torch is intentionally not imported by this module.  This handles scalar
-    # tensors and small diagnostic arrays returned by optional model adapters.
+    # このモジュールではTorchを直接インポートしません。ここでは、
+    # 任意の推定器が返すスカラーTensorや小さな診断配列を処理します。
     if hasattr(value, "detach") and hasattr(value, "cpu"):
         value = value.detach().cpu()
     if hasattr(value, "numpy"):
@@ -143,6 +146,7 @@ def _json_value(value: Any) -> Any:
     return str(value)
 
 
+# 推定器が持つモデル情報を辞書にまとめます。
 def _estimator_metadata(estimator: DepthEstimator) -> dict[str, Any]:
     metadata = getattr(estimator, "metadata", {})
     if callable(metadata):
@@ -152,6 +156,7 @@ def _estimator_metadata(estimator: DepthEstimator) -> dict[str, Any]:
     return _json_value(dict(metadata))
 
 
+# 推定器の出力から比較に使う深度配列を取り出します。
 def _prediction_values(
     prediction: PredictionLike,
     *,
@@ -181,6 +186,7 @@ def _prediction_values(
     )
 
 
+# 条件設定から推論器に渡すカメラ情報を作ります。
 def _camera_argument(
     condition: ComparisonCondition,
     approximate_intrinsics: CameraIntrinsics,
@@ -190,6 +196,7 @@ def _camera_argument(
     return None
 
 
+# 入れ子構造から有限数値の要素だけを再帰的に抽出します。
 def _numeric_leaves(value: Any, *, prefix: str = "") -> dict[str, float]:
     leaves: dict[str, float] = {}
     if isinstance(value, Mapping):
@@ -207,6 +214,7 @@ def _numeric_leaves(value: Any, *, prefix: str = "") -> dict[str, float]:
     return leaves
 
 
+# 数値群の件数、範囲、平均などを集計します。
 def _numeric_summary(values: Sequence[float]) -> dict[str, float | int | None]:
     array = np.asarray(values, dtype=np.float64)
     if array.size == 0:
@@ -239,6 +247,7 @@ def _numeric_summary(values: Sequence[float]) -> dict[str, float | int | None]:
     }
 
 
+# モデル固有の追加出力を数値情報中心に要約します。
 def _summarize_extras(extras: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     columns: dict[str, list[float]] = {}
     for item in extras:
@@ -247,12 +256,14 @@ def _summarize_extras(extras: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {key: _numeric_summary(values) for key, values in sorted(columns.items())}
 
 
+# 画像を指定パスへ保存し、書き込み失敗を検出します。
 def _write_image(path: Path, image: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(path), image):
         raise OSError(f"failed to write image: {path}")
 
 
+# 矩形領域に注記を付けます。
 def _annotate_box(
     bgr: np.ndarray,
     *,
@@ -297,6 +308,7 @@ def _annotate_box(
     return annotated
 
 
+# 既知距離と推定深度を比較し、誤差・相関・単調性・回帰直線などの集計値を計算します。
 def _known_distance_aggregate(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if len(rows) < 2:
         raise ValueError("known-distance comparison requires at least two samples")
@@ -350,6 +362,7 @@ def _known_distance_aggregate(rows: Sequence[Mapping[str, Any]]) -> dict[str, An
     }
 
 
+# 既知距離の画像群に各モデルを適用し、距離誤差を比較します。
 def evaluate_known_distance_condition(
     *,
     condition: ComparisonCondition,
@@ -511,6 +524,7 @@ def evaluate_known_distance_condition(
     return summary
 
 
+# 指定された期待SHA-256の書式を検証します。
 def _validate_expected_sha256(expected_sha256: str) -> str:
     expected = expected_sha256.strip().lower()
     if len(expected) != 64 or any(character not in "0123456789abcdef" for character in expected):
@@ -518,6 +532,7 @@ def _validate_expected_sha256(expected_sha256: str) -> str:
     return expected
 
 
+# 基準指先の必須座標とランドマーク番号を検証し、今回のモデル比較に不要な基準深度項目を除いて返します。
 def _clean_baseline_fingertip(
     fingertip: Mapping[str, Any],
     *,
@@ -536,8 +551,8 @@ def _clean_baseline_fingertip(
         raise ValueError("baseline fingertip landmark_index must be 8")
     if str(fingertip["landmark_name"]) != "INDEX_FINGER_TIP":
         raise ValueError("baseline fingertip landmark_name must be INDEX_FINGER_TIP")
-    # Depth fields came from the baseline model and must not leak into the new
-    # condition.  All coordinate/detection metadata is copied byte-for-value.
+    # 基準モデルの深度値が新しい比較条件へ混入しないよう、深度関連項目を除きます。
+    # 座標と検出メタデータは値を変更せず、そのまま引き継ぎます。
     return {
         str(key): _json_value(value)
         for key, value in fingertip.items()
@@ -545,6 +560,7 @@ def _clean_baseline_fingertip(
     }
 
 
+# 基準記録ファイルを読み込み、対応する比較レコードを返します。
 def _load_baseline_records(
     path: Path,
     *,
@@ -600,6 +616,7 @@ def _load_baseline_records(
     return records, actual
 
 
+# 座標配列を正規化して内容を識別するダイジェストを計算します。
 def _coordinate_digest(records: Sequence[Mapping[str, Any]]) -> str:
     coordinate_records = []
     for record in records:
@@ -629,6 +646,7 @@ def _coordinate_digest(records: Sequence[Mapping[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# 指定標本の指先位置に対応する深度値を取り出します。
 def _sample_fingertip_depth(
     depth_m: np.ndarray,
     baseline_fingertip: Mapping[str, Any],
@@ -651,6 +669,7 @@ def _sample_fingertip_depth(
     return item, value
 
 
+# グラフの凡例・軸ラベルを比較結果の表示名に置き換えます。
 def _relabel_chart(path: Path, condition: ComparisonCondition) -> None:
     chart = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if chart is None:
@@ -669,6 +688,7 @@ def _relabel_chart(path: Path, condition: ComparisonCondition) -> None:
     _write_image(path, chart)
 
 
+# 動画の各フレームに各モデルを適用し、深度推定と時系列指標を比較します。
 def evaluate_video_condition(
     *,
     condition: ComparisonCondition,
@@ -734,8 +754,8 @@ def evaluate_video_condition(
             capture.release()
             raise ValueError(f"input is not a readable video: {input_path}")
 
-        # OpenCV 4 and 5 differ in the default value of ORIENTATION_AUTO.  The
-        # iPhone MOV is stored landscape with a 90-degree display transform.
+        # OpenCV 4と5ではORIENTATION_AUTOの既定値が異なります。
+        # iPhoneのMOVは横向き映像に90度の表示変換を持つ形式で保存されています。
         orientation_auto_requested = False
         orientation_auto_enabled: bool | None = None
         orientation_metadata_deg: float | None = None
@@ -931,6 +951,7 @@ def evaluate_video_condition(
     return summary
 
 
+# 指定条件で深度モデル比較を実行し、結果と可視化を保存します。
 def evaluate_condition(
     *,
     condition: ComparisonCondition,
@@ -982,8 +1003,8 @@ def evaluate_condition(
             max_frames=max_video_frames,
             write_annotated_video=write_annotated_video,
         )
-    # Refresh after lazy loading so checkpoint path and state-dict audit counts
-    # are present even in the first condition's root summary.
+    # 遅延ロード後に要約を更新し、初回条件の記録にもチェックポイントパスと
+    # state_dictの監査件数を含めます。
     result["depth_model"] = _estimator_metadata(estimator)
     write_json(output_dir / "summary.json", result)
     return result
