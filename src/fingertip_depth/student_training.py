@@ -103,7 +103,7 @@ class StudentTrainingConfig:
         return value
 
 
-# 教師深度の時系列スパイクを除外する条件を保持します。
+# 教師深度の時系列スパイクと深度上限の除外条件を保持します。
 @dataclass(frozen=True, slots=True)
 class TeacherSpikeFilterConfig:
     """Deterministic run-level filtering of isolated teacher-depth excursions."""
@@ -116,6 +116,7 @@ class TeacherSpikeFilterConfig:
     relative_floor_fraction: float = 0.50
     mad_multiplier: float = 6.0
     mad_scale: float = 1.4826
+    max_depth_m: float | None = None
 
     # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
@@ -133,6 +134,10 @@ class TeacherSpikeFilterConfig:
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in values):
             raise ValueError("teacher spike thresholds must be finite and positive")
+        if self.max_depth_m is not None and (
+            not math.isfinite(self.max_depth_m) or self.max_depth_m <= 0.0
+        ):
+            raise ValueError("teacher max_depth_m must be finite and positive")
 
     # 主要なフィールドを、JSONへ保存できる辞書に変換します。
     def as_dict(self) -> dict[str, Any]:
@@ -697,7 +702,12 @@ def apply_teacher_spike_filter(
                     )
                     candidate_if_enabled = absolute_deviation_m > threshold_m
 
-                rejected = config.enabled and candidate_if_enabled
+                temporal_spike = config.enabled and candidate_if_enabled
+                depth_limit_exceeded = (
+                    config.max_depth_m is not None
+                    and identity.target_depth_m >= config.max_depth_m
+                )
+                rejected = temporal_spike or depth_limit_exceeded
                 key = (
                     identity.source_sequence_id,
                     identity.hand_index,
@@ -705,12 +715,14 @@ def apply_teacher_spike_filter(
                 )
                 if rejected:
                     rejected_keys.add(key)
-                if not config.enabled:
+                if depth_limit_exceeded:
+                    reason = "max_depth_exceeded"
+                elif temporal_spike:
+                    reason = "leave_one_out_hampel_excursion"
+                elif not config.enabled:
                     reason = "filter_disabled"
                 elif not eligible:
                     reason = "insufficient_contiguous_neighbors"
-                elif rejected:
-                    reason = "leave_one_out_hampel_excursion"
                 else:
                     reason = "within_threshold"
                 removed_sample_ids = (
@@ -740,6 +752,8 @@ def apply_teacher_spike_filter(
                         "robust_floor_m": robust_floor_m,
                         "threshold_m": threshold_m,
                         "candidate_if_enabled": candidate_if_enabled,
+                        "temporal_spike": temporal_spike,
+                        "depth_limit_exceeded": depth_limit_exceeded,
                         "rejected": rejected,
                         "reason": reason,
                         "removed_sample_ids": removed_sample_ids,
@@ -801,6 +815,7 @@ def apply_teacher_spike_filter(
                 "mad_multiplier * mad_scale * local_MAD_m)"
             ),
             "comparison": "absolute_deviation_m > threshold_m",
+            "depth_limit_rule": "target_depth_m >= max_depth_m when configured",
             "hflip_policy": (
                 "never participates in temporal statistics; inherits identity decision "
                 "by (source_sequence_id, hand_index, frame_index)"
@@ -819,6 +834,12 @@ def apply_teacher_spike_filter(
             "validation_samples_after": len(validation_samples),
             "identity_decisions": len(decisions),
             "identity_rejected": len(rejected_decisions),
+            "depth_limit_rejected": sum(
+                bool(decision["depth_limit_exceeded"]) for decision in decisions
+            ),
+            "temporal_spike_rejected": sum(
+                bool(decision["temporal_spike"]) for decision in decisions
+            ),
             "views_removed_total": len(all_samples) - len(train_samples) - len(validation_samples),
         },
         "identity_depth_statistics_before": {
@@ -1161,7 +1182,7 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             target.write("\n")
 
 
-# スパイク判定、除外標本、適用条件を監査記録に保存します。
+# 教師深度の除外判定と適用条件を監査記録に保存します。
 def _write_teacher_spike_filter_artifacts(
     output_dir: Path,
     result: TeacherSpikeFilterResult,

@@ -42,7 +42,7 @@ uv run --locked fingertip-train run
 
 Depth Proの `approx_focal` 条件から、人差し指先端（MediaPipe landmark 8）の単一画素深度を教師値として使います。これらは実測ground truthではなくpseudo-labelです。カメラ座標 `(X,Y,Z)` と軌跡成果物も作成します。
 
-デフォルトのStudent入力はRGB画像と人差し指chain（landmark 5/6/7/8）の画像平面XYです。MediaPipeの相対 `z` はモデルに渡しません。学習datasetではtrain側だけを水平反転し、validationは反転しません。
+デフォルトのStudent入力はRGB画像と人差し指chain（landmark 5/6/7/8）の画像平面XYです。MediaPipeの相対 `z` はモデルに渡しません。学習datasetではtrain側だけを水平反転し、validationは反転しません。現在の学習設定では、教師深度の孤立した時系列スパイクと、教師深度が0.8 m以上の標本をtrain/validationの両方から除外します。
 
 Phaseごとの手動コマンドは監査済みデータの再現や個別debug向けです。新しい動画の通常処理には `fingertip-train` を使います。
 

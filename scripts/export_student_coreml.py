@@ -17,11 +17,7 @@ from fingertip_depth.coreml_export import (
     write_export_manifest,
 )
 
-DEFAULT_RUN_MANIFEST = Path(
-    "outputs/training_pipeline/runs/"
-    "c0de470943c02f47452db57bcfc98f2af920e8f56d47ab981b7f43b9097a5a6a/"
-    "run_manifest.json"
-)
+DEFAULT_RUN_MANIFEST = Path("outputs/student_retrain_max_depth_080m_epochs40_patience12/run_manifest.json")
 DEFAULT_OUTPUT_DIR = Path("outputs/student_depth_coreml_latest")
 DEFAULT_PARITY_SOURCE_FIXTURE = Path(
     "outputs/phase8_student_coreml_iphone15/coreml_parity_inputs.npz"

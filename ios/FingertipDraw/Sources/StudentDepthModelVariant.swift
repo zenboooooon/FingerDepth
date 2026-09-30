@@ -31,11 +31,11 @@ enum StudentDepthModelVariant: String, CaseIterable, Hashable {
         case .latest:
             return StudentDepthModelDescriptor(
                 id: "latest_training_pipeline",
-                displayName: "最新モデル (epoch 2)",
+                displayName: "最新モデル (80 cm・epoch 13)",
                 shortName: "最新",
                 resourceName: "StudentDepthLatest",
-                checkpointSHA256: "66829e68ec5901d45c2805b62f4221b824bbbb2d215af7b14957c9efedbd600a",
-                runManifestSHA256: "e699adf05b7f2f3507e3920304bc6b11ae135846df2f3fa8cb677879e33b2a2a",
+                checkpointSHA256: "b74ffbe49fd98f96a4d3280074fef148df27ac1016d1fcfeca5cc905fd4f84e5",
+                runManifestSHA256: "80797bb0529184bbbd4d0f8407772c45e9733098112aa07ec933f648db615e19",
                 exportBackend: "torch.export"
             )
         }

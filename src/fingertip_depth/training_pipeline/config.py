@@ -345,7 +345,7 @@ class StudentOptimizerSettings:
             raise ValueError("training.optimizer.precision must be float32 or bfloat16")
 
 
-# 教師深度のスパイクを検出・除外する設定です。
+# 教師深度のスパイクと上限値による除外設定です。
 @dataclass(frozen=True, slots=True)
 class SpikeFilterSettings:
     enabled: bool = True
@@ -356,6 +356,7 @@ class SpikeFilterSettings:
     relative_floor_fraction: float = 0.50
     mad_multiplier: float = 6.0
     mad_scale: float = 1.4826
+    max_depth_m: float | None = None
 
     # 作成後にフィールドの型、範囲、相互の整合性を検証します。
     def __post_init__(self) -> None:
@@ -371,6 +372,10 @@ class SpikeFilterSettings:
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in thresholds):
             raise ValueError("training spike-filter thresholds must be finite and positive")
+        if self.max_depth_m is not None and (
+            not math.isfinite(self.max_depth_m) or self.max_depth_m <= 0.0
+        ):
+            raise ValueError("training spike-filter max_depth_m must be finite and positive")
 
 
 # モデル、最適化、学習回数、評価に関する設定をまとめます。
@@ -873,6 +878,7 @@ def _load_spike_filter(table: Mapping[str, Any]) -> SpikeFilterSettings:
         "relative_floor_fraction",
         "mad_multiplier",
         "mad_scale",
+        "max_depth_m",
     }
     _reject_unknown(table, allowed, section="training.spike_filter")
     return SpikeFilterSettings(
@@ -900,6 +906,11 @@ def _load_spike_filter(table: Mapping[str, Any]) -> SpikeFilterSettings:
         ),
         mad_scale=_positive_float(
             table.get("mad_scale", 1.4826), field="training.spike_filter.mad_scale"
+        ),
+        max_depth_m=(
+            _positive_float(table["max_depth_m"], field="training.spike_filter.max_depth_m")
+            if "max_depth_m" in table
+            else None
         ),
     )
 

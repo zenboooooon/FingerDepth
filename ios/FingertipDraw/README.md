@@ -3,7 +3,7 @@
 固定した iPhone 15（`iPhone15,4`）/ iOS 26.6.1 の背面広角カメラで、MediaPipe の
 landmark 5–8 と student model から人差し指先の `(X, Y, Z)` を推定し、カメラ映像と
 X–Z パネルへ軌跡を描画する最小アプリです。既存の Phase 8 モデルと、最新training runの
-best checkpoint（epoch 2）を `torch.export` から変換したモデルを画面上で切り替えられます。
+best checkpoint（80 cm以上の教師深度を除外、epoch 13）を `torch.export` から変換したモデルを画面上で切り替えられます。
 
 ## 固定条件
 

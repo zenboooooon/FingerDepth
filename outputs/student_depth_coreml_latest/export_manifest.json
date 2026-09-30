@@ -27,11 +27,11 @@
     }
   },
   "source": {
-    "run_manifest_path": "/home/s6323038/depth_for_task/outputs/training_pipeline/runs/c0de470943c02f47452db57bcfc98f2af920e8f56d47ab981b7f43b9097a5a6a/run_manifest.json",
-    "run_manifest_sha256": "e699adf05b7f2f3507e3920304bc6b11ae135846df2f3fa8cb677879e33b2a2a",
-    "checkpoint_path": "/home/s6323038/depth_for_task/outputs/training_pipeline/runs/c0de470943c02f47452db57bcfc98f2af920e8f56d47ab981b7f43b9097a5a6a/best_checkpoint.pt",
-    "checkpoint_sha256": "66829e68ec5901d45c2805b62f4221b824bbbb2d215af7b14957c9efedbd600a",
-    "checkpoint_epoch": 2,
+    "run_manifest_path": "/home/s6323038/depth_for_task/outputs/student_retrain_max_depth_080m_epochs40_patience12/run_manifest.json",
+    "run_manifest_sha256": "80797bb0529184bbbd4d0f8407772c45e9733098112aa07ec933f648db615e19",
+    "checkpoint_path": "/home/s6323038/depth_for_task/outputs/student_retrain_max_depth_080m_epochs40_patience12/best_checkpoint.pt",
+    "checkpoint_sha256": "b74ffbe49fd98f96a4d3280074fef148df27ac1016d1fcfeca5cc905fd4f84e5",
+    "checkpoint_epoch": 13,
     "dataset_manifest_sha256": "a33112d5350f853856f0fe6e1c661a70362e3b6a4c0bca5d298e75b3ab5c0ff0"
   },
   "interface": {
@@ -150,8 +150,8 @@
         4,
         2
       ],
-      "prediction_min_m": 0.32566824555397034,
-      "prediction_max_m": 0.4301483929157257,
+      "prediction_min_m": 0.22029095888137817,
+      "prediction_max_m": 0.4333142042160034,
       "input_source_fixture_path": "/home/s6323038/depth_for_task/outputs/phase8_student_coreml_iphone15/coreml_parity_inputs.npz",
       "input_source_fixture_sha256": "2ae8de98c98dd6982c66f58372c2c24e9ba68eac7436d6bba4d29ef20dfaeb7c"
     },
@@ -165,18 +165,18 @@
   "artifacts": {
     "exported_program": {
       "path": "/home/s6323038/depth_for_task/outputs/student_depth_coreml_latest/StudentDepthLatest.pt2",
-      "sha256": "fe335b8f668fe0cf03a4d037d37c49f887c5fa7d5f40ec0c3ed7ad98b7e8bef9",
-      "byte_count": 103291911
+      "sha256": "1c404aa0edb520812411fbe72688f6b768474f1dd5ef68a1933d8e1079d2f4c5",
+      "byte_count": 103291912
     },
     "coreml": {
       "path": "/home/s6323038/depth_for_task/outputs/student_depth_coreml_latest/StudentDepthLatest.mlpackage",
-      "sha256": "59c08c93499442199e7833fa3c842effa82697a48bf8421720be66d317d76130",
+      "sha256": "daf8d71ba7ddf759e5b86203d711231d6deb46cbfaef13c82649f76167f6a143",
       "byte_count": 51167976
     },
     "parity_fixture": {
       "path": "/home/s6323038/depth_for_task/outputs/student_depth_coreml_latest/coreml_parity_inputs.npz",
-      "sha256": "3a726c531f798e47be21b8b5cf048593b39560705ede9f30e5dd3f15ec4c862e",
-      "byte_count": 60295118
+      "sha256": "bdcfb2da6314e975b50ec9d4ce9438b313bac0cfc1daa6a1799fb1eb9a29d33a",
+      "byte_count": 60295163
     }
   },
   "environment": {

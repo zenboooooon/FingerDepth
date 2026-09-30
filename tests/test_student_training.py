@@ -439,6 +439,33 @@ def test_teacher_spike_filter_rejects_isolated_and_two_frame_bursts_with_hflip()
     )
 
 
+def test_teacher_depth_limit_removes_sustained_high_values_and_hflip() -> None:
+    train = _paired_train_stream("high_plateau", [0.30, 0.80, 0.81, 0.82, 0.30])
+    validation = [
+        _temporal_sample(
+            sequence="validation",
+            split="validation",
+            frame_index=frame,
+            depth_m=depth,
+        )
+        for frame, depth in enumerate([0.30, 0.79, 0.80, 0.81, 0.30])
+    ]
+    result = apply_teacher_spike_filter(
+        _temporal_corpus(train, validation),
+        TeacherSpikeFilterConfig(enabled=False, max_depth_m=0.80),
+    )
+
+    assert {sample.frame_index for sample in result.train_samples} == {0, 4}
+    assert {sample.frame_index for sample in result.validation_samples} == {0, 1, 4}
+    assert result.report["counts"]["depth_limit_rejected"] == 5
+    assert result.report["counts"]["temporal_spike_rejected"] == 0
+    assert result.report["counts"]["views_removed_total"] == 8
+    assert all(
+        decision["reason"] == "max_depth_exceeded"
+        for decision in result.report["rejected_observations"]
+    )
+
+
 def test_teacher_spike_filter_keeps_smooth_motion_and_does_not_cross_gaps() -> None:
     train = _paired_train_stream(
         "smooth",
@@ -510,6 +537,7 @@ def test_teacher_spike_filter_rejects_mismatched_hflip_provenance() -> None:
         ({"frame_radius": 0}, "frame_radius"),
         ({"frame_radius": 2, "min_neighbors": 5}, "min_neighbors"),
         ({"absolute_floor_m": 0.0}, "thresholds"),
+        ({"max_depth_m": 0.0}, "max_depth_m"),
     ),
 )
 def test_teacher_spike_filter_config_rejects_invalid_values(
@@ -1016,6 +1044,8 @@ def test_cli_main_parses_and_forwards_training_configuration(
             "7",
             "--teacher-spike-mad-scale",
             "1.5",
+            "--teacher-max-depth-m",
+            "0.8",
         ]
     )
 
@@ -1042,6 +1072,7 @@ def test_cli_main_parses_and_forwards_training_configuration(
         relative_floor_fraction=0.4,
         mad_multiplier=7.0,
         mad_scale=1.5,
+        max_depth_m=0.8,
     )
     printed = json.loads(capsys.readouterr().out)
     assert printed["best_epoch"] == 2

@@ -90,6 +90,7 @@ absolute_floor_m = 0.1
 relative_floor_fraction = 0.4
 mad_multiplier = 5.0
 mad_scale = 1.4826
+max_depth_m = 0.8
 """,
     )
 
@@ -116,6 +117,7 @@ mad_scale = 1.4826
     assert optimizer.image_mean == pytest.approx((0.1, 0.2, 0.3))
     assert spike_filter.enabled is True
     assert spike_filter.frame_radius == 4
+    assert spike_filter.max_depth_m == 0.8
 
 
 def test_fingerprint_dict_uses_project_relative_paths_and_plain_values(tmp_path: Path) -> None:

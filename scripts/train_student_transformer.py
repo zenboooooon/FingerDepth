@@ -74,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--teacher-spike-relative-floor-fraction", type=float, default=0.50)
     parser.add_argument("--teacher-spike-mad-multiplier", type=float, default=6.0)
     parser.add_argument("--teacher-spike-mad-scale", type=float, default=1.4826)
+    parser.add_argument("--teacher-max-depth-m", type=float)
     return parser
 
 
@@ -119,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         relative_floor_fraction=args.teacher_spike_relative_floor_fraction,
         mad_multiplier=args.teacher_spike_mad_multiplier,
         mad_scale=args.teacher_spike_mad_scale,
+        max_depth_m=args.teacher_max_depth_m,
     )
     result = train_student_transformer(
         dataset_manifest_path=args.dataset_manifest,
